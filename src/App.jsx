@@ -999,11 +999,11 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,setStats,annee,re
 
           {/* En-tête médecins — sticky */}
           <div style={{display:"flex",position:"sticky",top:0,zIndex:10,background:T.bg,paddingBottom:6,paddingTop:2}}>
-            <div style={{width:60,flexShrink:0}}/>
+            <div style={{width:60,flexShrink:0,borderRight:"2px solid #e0e4f4"}}/>
             {colonnes.map(m=>{
               const c=getCouleur(m.id);
               return (
-                <div key={m.id} style={{width:colW,flexShrink:0,padding:"0 2px",textAlign:"center"}}>
+                <div key={m.id} style={{width:colW,flexShrink:0,padding:"0 2px",textAlign:"center",boxSizing:"border-box"}}>
                   <div style={{background:c.bg,color:c.text,border:"1px solid "+c.border,borderRadius:8,padding:"5px 3px",fontSize:10,fontWeight:800,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
                     {m.nom.slice(0,6)}
                   </div>
@@ -1082,7 +1082,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,setStats,annee,re
                       return (
                         <div key={m.id}
                           onClick={()=>isAdmin&&cells.length>0&&setModalDate(j.key)}
-                          style={{width:colW,flexShrink:0,borderRight:borderR,padding:"2px",display:"flex",flexDirection:"column",gap:2,justifyContent:"center",cursor:isAdmin&&cells.length>0?"pointer":"default"}}>
+                          style={{width:colW,flexShrink:0,borderRight:borderR,padding:"2px",display:"flex",flexDirection:"column",gap:2,justifyContent:"center",cursor:isAdmin&&cells.length>0?"pointer":"default",boxSizing:"border-box"}}>
                           {cells.length===0
                             ?<div style={{height:26}}/>
                             :cells.map((cell,ci)=>(
