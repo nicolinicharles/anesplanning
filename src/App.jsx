@@ -1283,21 +1283,6 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
       <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch",marginLeft:-16,marginRight:-16,paddingLeft:16}}>
         <div style={{minWidth:colonnes.length*colW+72}}>
 
-          {/* En-tête médecins — sticky */}
-          <div style={{display:"flex",position:"sticky",top:58,zIndex:10,background:T.bg,paddingBottom:6,paddingTop:4,boxShadow:"0 2px 8px rgba(79,110,247,0.08)"}}>
-            <div style={{width:60,flexShrink:0,boxSizing:"border-box",borderRight:"2px solid #e0e4f4"}}/>
-            {colonnes.map(m=>{
-              const c=getCouleur(m.id);
-              return (
-                <div key={m.id} style={{width:colW,flexShrink:0,padding:"0 2px",textAlign:"center",boxSizing:"border-box"}}>
-                  <div style={{background:c.bg,color:c.text,border:"1px solid "+c.border,borderRadius:8,padding:"5px 3px",fontSize:10,fontWeight:800,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
-                    {m.nom.slice(0,6)}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
           {/* Semaines */}
           {semaines.map((sem,si)=>(
             <div key={si} style={{marginBottom:4,borderRadius:10,overflow:"hidden",border:"2px solid #d0d8f0",background:"#fff",boxShadow:"0 2px 8px rgba(79,110,247,0.06)"}}>
