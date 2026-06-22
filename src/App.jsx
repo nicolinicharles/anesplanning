@@ -768,7 +768,6 @@ function LoginView({onLogin}){
         <input type="password" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()} placeholder="••••••••" style={{...inp,marginBottom:err?8:20}}/>
         {err&&<p style={{color:T.red,fontSize:13,margin:"0 0 16px"}}>{err}</p>}
         <Btn onClick={go} disabled={loading||!uid||!pw} full>{loading?"Connexion...":"Se connecter →"}</Btn>
-        <p style={{marginTop:20,fontSize:11,color:T.textMuted,textAlign:"center"}}>Mot de passe = identifiant · Admin : admin / admin123</p>
       </div>
     </div>
   );
