@@ -1,12 +1,31 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
+import { createClient } from "@supabase/supabase-js";
 
-// ── STORAGE PERSISTANT ─────────────────────────────────────────────────────────
+// ── STORAGE PERSISTANT (Supabase) ───────────────────────────────────────────────
+
+const supabase = createClient(
+  "https://zfxjdeqbqebgxerhryes.supabase.co",
+  "sb_publishable_YAOptWQ8JKIh-YrcFXrhZw_JE5EdH0l"
+);
 
 async function storageGet(key) {
-  try { const r = await window.storage.get(key); return r ? JSON.parse(r.value) : null; } catch { return null; }
+  try {
+    const { data, error } = await supabase
+      .from("app_state")
+      .select("data")
+      .eq("id", key)
+      .maybeSingle();
+    if (error) { console.error("Supabase get error", error); return null; }
+    return data ? data.data : null;
+  } catch (e) { console.error("Storage error", e); return null; }
 }
 async function storageSet(key, value) {
-  try { await window.storage.set(key, JSON.stringify(value)); } catch(e) { console.error("Storage error", e); }
+  try {
+    const { error } = await supabase
+      .from("app_state")
+      .upsert({ id: key, data: value, updated_at: new Date().toISOString() });
+    if (error) console.error("Supabase set error", error);
+  } catch (e) { console.error("Storage error", e); }
 }
 
 // ── DESIGN TOKENS ─────────────────────────────────────────────────────────────
@@ -2898,7 +2917,7 @@ function VueMonPlanning({gardes,bos,csbo,currentUser,annee}){
 
 // ── APP ────────────────────────────────────────────────────────────────────────
 
-const STORAGE_KEY = "anesplanning_data";
+const STORAGE_KEY = "main";
 
 export default function App(){
   const [user,setUser]=useState(null);
@@ -2938,11 +2957,13 @@ export default function App(){
     });
   },[]);
 
-  // Sauvegarde automatique quand les données changent
+  // Sauvegarde automatique (avec léger délai) quand les données changent
   useEffect(()=>{
-    if(!loading){
+    if(loading) return;
+    const t=setTimeout(()=>{
       storageSet(STORAGE_KEY,{gardes,bos,csbo,besoins,echanges,indispos,contraintes,periodes,remplacants,stats});
-    }
+    },600);
+    return ()=>clearTimeout(t);
   },[gardes,bos,csbo,besoins,echanges,indispos,contraintes,periodes,remplacants,stats,loading]);
 
   const handleAnnee=fn=>setAnnee(fn);
