@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 // ── STORAGE PERSISTANT (Supabase) ───────────────────────────────────────────────
@@ -2936,6 +2936,7 @@ export default function App(){
   const [toast,setToast]=useState(null);
   const [menu,setMenu]=useState(false);
   const [loading,setLoading]=useState(true);
+  const applyingRemote=useRef(false);
   const showToast=useCallback((msg,type="success")=>setToast({msg,type}),[]);
 
   // Chargement initial
@@ -2957,9 +2958,35 @@ export default function App(){
     });
   },[]);
 
+  // Synchronisation temps réel : applique les changements faits par d'autres appareils
+  useEffect(()=>{
+    const channel=supabase
+      .channel("app_state_sync")
+      .on("postgres_changes",
+        {event:"*",schema:"public",table:"app_state",filter:"id=eq."+STORAGE_KEY},
+        (payload)=>{
+          const d=payload.new&&payload.new.data;
+          if(!d)return;
+          applyingRemote.current=true;
+          setGardes(d.gardes||{});
+          setBos(d.bos||{});
+          setCsbo(d.csbo||{});
+          setBesoins(d.besoins||{});
+          setEchanges(d.echanges||[]);
+          setIndispos(d.indispos||[]);
+          setContraintes(d.contraintes||[]);
+          setPeriodes(d.periodes||[]);
+          setRemplacants(d.remplacants||[]);
+          setStats(d.stats||[]);
+        })
+      .subscribe();
+    return ()=>{supabase.removeChannel(channel);};
+  },[]);
+
   // Sauvegarde automatique (avec léger délai) quand les données changent
   useEffect(()=>{
     if(loading) return;
+    if(applyingRemote.current){applyingRemote.current=false;return;}
     const t=setTimeout(()=>{
       storageSet(STORAGE_KEY,{gardes,bos,csbo,besoins,echanges,indispos,contraintes,periodes,remplacants,stats});
     },600);
