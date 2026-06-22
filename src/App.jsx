@@ -120,11 +120,12 @@ function cfn(tot,ms,m,fn){const tp=ms.reduce((s,x)=>s+fn(x),0);return tp>0?tot*f
 function cWE(m){if(m.id==="lydia"||m.etp<=0.55)return 6;if(m.etp<0.85)return 8;return 10;}
 function weBl(m){return m.vd+m.sa;}
 function depWE(m){return weBl(m)>=cWE(m)+2;}
-function initSt(ms){return ms.map(m=>({...m,u:0,g:0,vd:0,sa:0,sem:0,we:[]}));}
+function initSt(ms){return ms.map(m=>({...m,u:0,g:0,vd:0,sa:0,sem:0,we:[],fer:0}));}
 function addSt(st,id,key,ferie){
   const m=st.find(x=>x.id===id);if(!m)return;
   const js=dkToDate(key).getDay();
   m.g++;m.u+=poids(key,ferie);
+  if(ferie)m.fer++;
   if(js===5)m.vd++;if(js===6)m.sa++;if(js>=1&&js<=4)m.sem++;
   if([5,6,0].includes(js))m.we.push(numSem(key));
 }
@@ -132,6 +133,7 @@ function remSt(st,id,key,ferie){
   const m=st.find(x=>x.id===id);if(!m)return;
   const js=dkToDate(key).getDay();
   m.g--;m.u-=poids(key,ferie);
+  if(ferie)m.fer--;
   if(js===5)m.vd--;if(js===6)m.sa--;if(js>=1&&js<=4)m.sem--;
   if([5,6,0].includes(js)){const s=numSem(key);const i=m.we.indexOf(s);if(i>=0)m.we.splice(i,1);}
 }
@@ -161,18 +163,84 @@ function candOk(m,key,indispos,contraintes,gardes,interdit){
   if(contrainteBloque(m.id,key,contraintes))return false;
   if(!contrainteMax(m.id,key,contraintes,gardes))return false;
   const d=dkToDate(key);
+  // Pas de garde consécutive (veille/lendemain)
   const v=dk(new Date(d.getFullYear(),d.getMonth(),d.getDate()-1));
   const l=dk(new Date(d.getFullYear(),d.getMonth(),d.getDate()+1));
-  if(gardes[v]===m.id)return false;if(gardes[l]===m.id)return false;
+  if(gardes[v]===m.id)return false;
+  if(gardes[l]===m.id)return false;
+  // Max 2 gardes par semaine calendaire (lundi-dimanche)
+  const jourSem=d.getDay()===0?6:d.getDay()-1; // 0=lundi, 6=dimanche
+  const debutSem=new Date(d);debutSem.setDate(d.getDate()-jourSem);
+  let gardesSemaine=0;
+  for(let i=0;i<7;i++){
+    const ks=dk(new Date(debutSem.getFullYear(),debutSem.getMonth(),debutSem.getDate()+i));
+    if(ks!==key&&gardes[ks]===m.id)gardesSemaine++;
+  }
+  if(gardesSemaine>=2)return false;
+  // Pas 3 gardes en 5 jours (fenêtre glissante -4j à +4j)
+  let gardes5j=0;
+  for(let i=-4;i<=4;i++){
+    if(i===0)continue;
+    const kw=dk(new Date(d.getFullYear(),d.getMonth(),d.getDate()+i));
+    if(gardes[kw]===m.id)gardes5j++;
+  }
+  if(gardes5j>=2)return false;
+  // Pas jeudi + samedi (ou samedi + jeudi) : empiète sur le weekend
+  const js=d.getDay();
+  if(js===4){ // jeudi → vérifier samedi +2j
+    const samK=dk(new Date(d.getFullYear(),d.getMonth(),d.getDate()+2));
+    if(gardes[samK]===m.id)return false;
+  }
+  if(js===6){ // samedi → vérifier jeudi -2j
+    const jeuK=dk(new Date(d.getFullYear(),d.getMonth(),d.getDate()-2));
+    if(gardes[jeuK]===m.id)return false;
+  }
+  // Éviter semaine pleine avant/après un pack ven+dim
+  // Si vendredi : vérifier que le médecin n'a pas >=3 gardes dans les 7 jours qui suivent
+  if(js===5){
+    let gardesApres=0;
+    for(let i=1;i<=7;i++){
+      const ka=dk(new Date(d.getFullYear(),d.getMonth(),d.getDate()+i));
+      if(gardes[ka]===m.id)gardesApres++;
+    }
+    if(gardesApres>=3)return false;
+    // Et pas >=3 gardes dans les 7 jours précédents
+    let gardesAvant=0;
+    for(let i=1;i<=7;i++){
+      const kb=dk(new Date(d.getFullYear(),d.getMonth(),d.getDate()-i));
+      if(gardes[kb]===m.id)gardesAvant++;
+    }
+    if(gardesAvant>=3)return false;
+  }
   return true;
 }
-function sWE(m,key,st){
+function sWE(m,key,st,ferie){
   const tv=st.reduce((s,x)=>s+x.vd,0)+1;
   let sc=bonus(m,st,4);sc+=(cWE(m)-weBl(m))*120;sc+=(cfn(tv,st,m,pw)-m.vd)*20;
+  if(ferie){
+    const totalFer=st.reduce((s,x)=>s+x.fer,0)+1;
+    const te=st.reduce((s,x)=>s+x.etp,0);
+    const cibleFer=te>0?totalFer*m.etp/te:0;
+    sc-=(m.fer-cibleFer)*5000;
+    if(m.fer>0)sc-=8000;
+  }
   if(m.id==="lydia"||m.etp<=0.55){if(m.vd<2)sc+=20000;if(m.vd>=3)sc-=15000;if(m.vd>=4)sc-=50000;}
   if(m.etp<0.85&&m.etp>0.55&&m.id!=="lydia"){if(m.vd<3)sc+=18000;if(m.vd>=5)sc-=18000;}
   if(m.etp>=1){if(m.vd<5)sc+=18000;if(m.vd>=7)sc-=15000;}
   const s=numSem(key);if(m.we.some(w=>Math.abs(w-s)===0))sc-=100;if(m.we.some(w=>Math.abs(w-s)===1))sc-=55;
+  // Pénalité forte si semaine pleine (5 gardes sem) avant ou après ce WE
+  // Vérifier si le médecin a déjà des gardes en semaine cette semaine-là
+  const d2=dkToDate(key);
+  // Semaine précédente : lun-ven
+  let gardesSemPrev=0,gardesSemSuiv=0;
+  for(let i=1;i<=5;i++){
+    const prev=dk(new Date(d2.getFullYear(),d2.getMonth(),d2.getDate()-i));
+    const suiv=dk(new Date(d2.getFullYear(),d2.getMonth(),d2.getDate()+i));
+    // gardes est accessible via closure dans genererGardes
+    // On utilise m.sem (gardes de semaine déjà comptées) comme proxy
+  }
+  // Pénalité basée sur le nb de gardes de semaine récentes (approximation)
+  if(m.sem>0&&m.we.some(w=>w===s-1||w===s+1))sc-=8000;
   return sc+Math.random();
 }
 function sSam(m,key,st){
@@ -180,13 +248,35 @@ function sSam(m,key,st){
   const minS=Math.min(...st.map(x=>x.sa));sc+=(ts/st.length-m.sa)*360;
   if(m.sa>minS+1)sc-=10000;if(m.sa>minS+2)sc-=80000;if(m.sa<=minS)sc+=6000;
   const s=numSem(key);if(m.we.some(w=>Math.abs(w-s)===0))sc-=100;if(m.we.some(w=>Math.abs(w-s)===1))sc-=55;
+  // Pénalité forte si semaine pleine (5 gardes sem) avant ou après ce WE
+  // Vérifier si le médecin a déjà des gardes en semaine cette semaine-là
+  const d2=dkToDate(key);
+  // Semaine précédente : lun-ven
+  let gardesSemPrev=0,gardesSemSuiv=0;
+  for(let i=1;i<=5;i++){
+    const prev=dk(new Date(d2.getFullYear(),d2.getMonth(),d2.getDate()-i));
+    const suiv=dk(new Date(d2.getFullYear(),d2.getMonth(),d2.getDate()+i));
+    // gardes est accessible via closure dans genererGardes
+    // On utilise m.sem (gardes de semaine déjà comptées) comme proxy
+  }
+  // Pénalité basée sur le nb de gardes de semaine récentes (approximation)
+  if(m.sem>0&&m.we.some(w=>w===s-1||w===s+1))sc-=8000;
   return sc+Math.random();
 }
 function sSem(m,key,ferie,st){
   const tg=st.reduce((s,x)=>s+x.g,0)+1;let sc=bonus(m,st,poids(key,ferie));
   sc+=(cfn(tg,st,m,pg)-m.g)*42;
   const tu=st.reduce((s,x)=>s+x.u,0)+poids(key,ferie),te=st.reduce((s,x)=>s+x.etp,0);
-  sc+=(te>0?tu*m.etp/te:0-m.u)*0.60;return sc+Math.random();
+  sc+=(te>0?tu*m.etp/te:0-m.u)*0.60;
+  // Pénalité forte si déjà des fériés — équilibrage spécifique
+  if(ferie){
+    const totalFer=st.reduce((s,x)=>s+x.fer,0)+1;
+    const cibleFer=te>0?totalFer*m.etp/te:0;
+    const ecartFer=m.fer-cibleFer;
+    sc-=ecartFer*5000; // Fort pour équilibrer les fériés
+    if(m.fer>0)sc-=8000; // Pénalité supplémentaire si déjà eu un férié
+  }
+  return sc+Math.random();
 }
 
 function genererGardes(medecins,indispos,contraintes,debutKey,finKey,annee,gardesInitiales={}){
@@ -201,7 +291,7 @@ function genererGardes(medecins,indispos,contraintes,debutKey,finKey,annee,garde
     if(!gardes[j.key]&&!gardes[dim.key]){
       let cands=st.filter(m=>candOk(m,j.key,indispos,contraintes,gardes,[])&&candOk(m,dim.key,indispos,contraintes,gardes,[]));
       let sq=cands.filter(m=>!depWE(m));if(sq.length>0)cands=sq;
-      if(cands.length>0){cands.sort((a,b)=>sWE(b,j.key,st)-sWE(a,j.key,st));const c=cands[0];gardes[j.key]=c.id;gardes[dim.key]=c.id;addSt(st,c.id,j.key,j.ferie);addSt(st,c.id,dim.key,dim.ferie);}
+      if(cands.length>0){cands.sort((a,b)=>sWE(b,j.key,st,j.ferie)-sWE(a,j.key,st,j.ferie));const c=cands[0];gardes[j.key]=c.id;gardes[dim.key]=c.id;addSt(st,c.id,j.key,j.ferie);addSt(st,c.id,dim.key,dim.ferie);}
     }
     // Si vendredi pris (remplaçant) mais dimanche libre -> attribuer dimanche seul
     else if(gardes[j.key]&&gardes[j.key].startsWith&&gardes[j.key].startsWith("remp_")&&!gardes[dim.key]){
@@ -213,7 +303,7 @@ function genererGardes(medecins,indispos,contraintes,debutKey,finKey,annee,garde
     else if(!gardes[j.key]&&gardes[dim.key]&&gardes[dim.key].startsWith&&gardes[dim.key].startsWith("remp_")){
       let cands=st.filter(m=>candOk(m,j.key,indispos,contraintes,gardes,[]));
       let sq=cands.filter(m=>!depWE(m));if(sq.length>0)cands=sq;
-      if(cands.length>0){cands.sort((a,b)=>sWE(b,j.key,st)-sWE(a,j.key,st));const c=cands[0];gardes[j.key]=c.id;addSt(st,c.id,j.key,j.ferie);}
+      if(cands.length>0){cands.sort((a,b)=>sWE(b,j.key,st,j.ferie)-sWE(a,j.key,st,j.ferie));const c=cands[0];gardes[j.key]=c.id;addSt(st,c.id,j.key,j.ferie);}
     }
     if(!gardes[sam.key]){
       const interdit=[gardes[j.key],gardes[dim.key]].filter(Boolean);
@@ -245,7 +335,12 @@ function genererGardes(medecins,indispos,contraintes,debutKey,finKey,annee,garde
     if(!fait)break;
   }
   const stats=medecins.map(m=>{const s=st.find(x=>x.id===m.id);return{...m,unites:s.u,gardes:s.g,vendDim:s.vd,samedi:s.sa,semaine:s.sem};});
-  return{gardes,stats};
+  // Jours sans garde dans la période
+  const gardesManquantes=[];
+  for(const j of jours){
+    if(!gardes[j.key]) gardesManquantes.push(j.key);
+  }
+  return{gardes,stats,gardesManquantes};
 }
 
 // ── ALGORITHME CS / BO (V18) ──────────────────────────────────────────────────
@@ -316,15 +411,53 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
   });
 
   // Vérifie si un médecin peut faire un poste ce jour
-  function peutFaire(m, key) {
+  function peutFaire(m, key, currentResult) {
+    const result2 = currentResult || result;
     if (estIndispo(m.id, key, indispos)) return false;
     if (contrainteBloque(m.id, key, contraintes)) return false;
-    // Pas de CS/BO si garde ce jour
-    if (gardes[key] === m.id) return false;
+    // Pas de CS/BO si garde ce jour (y compris PONCTUEL)
+    const g2=gardes[key];
+    const gr2=g2&&g2.startsWith("PONCTUEL:")?g2.split(":")[1]:g2;
+    if (gr2 === m.id) return false;
+    // Pas de CS/BO si déjà un CS/BO ce jour dans result
+    const deja=result2[key]||{};
+    if(deja.cs1===m.id||deja.cs2===m.id||deja.bo1===m.id||deja.bo2===m.id||deja.bo3===m.id) return false;
     // Pas de CS/BO le lendemain d'une garde
     const d = dkToDate(key);
     const veille = dk(new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1));
     if (gardes[veille] === m.id) return false;
+    // Si pack ven+dim cette semaine → max 2 CS/BO sur la semaine
+    const jourSem = d.getDay() === 0 ? 6 : d.getDay() - 1; // 0=lun
+    const debutSem = new Date(d); debutSem.setDate(d.getDate() - jourSem);
+    // Chercher si ven+dim de garde cette semaine
+    const venK = dk(new Date(debutSem.getFullYear(), debutSem.getMonth(), debutSem.getDate() + 4));
+    const dimK = dk(new Date(debutSem.getFullYear(), debutSem.getMonth(), debutSem.getDate() + 6));
+    const aPackWE = gardes[venK] === m.id && gardes[dimK] === m.id;
+    if (aPackWE) {
+      // Compter CS/BO déjà placés cette semaine
+      let nbSem = 0;
+      for (let i = 0; i < 7; i++) {
+        const ks = dk(new Date(debutSem.getFullYear(), debutSem.getMonth(), debutSem.getDate() + i));
+        if (ks === key) continue;
+        const vs = result2[ks] || {};
+        if (vs.cs1 === m.id || vs.cs2 === m.id || vs.bo1 === m.id || vs.bo2 === m.id || vs.bo3 === m.id) nbSem++;
+      }
+      if (nbSem >= 2) return false; // Max 2 CS/BO la semaine du pack ven+dim
+    }
+    // Même règle pour la semaine précédente si dim était en début de semaine
+    const dimPrecK = dk(new Date(d.getFullYear(), d.getMonth(), d.getDate() - jourSem - 1));
+    const venPrecK = dk(new Date(d.getFullYear(), d.getMonth(), d.getDate() - jourSem - 3));
+    const aPackWEPrec = gardes[venPrecK] === m.id && gardes[dimPrecK] === m.id;
+    if (aPackWEPrec) {
+      let nbSemPrec = 0;
+      for (let i = 0; i < 7; i++) {
+        const ks = dk(new Date(debutSem.getFullYear(), debutSem.getMonth(), debutSem.getDate() + i));
+        if (ks === key) continue;
+        const vs = result2[ks] || {};
+        if (vs.cs1 === m.id || vs.cs2 === m.id || vs.bo1 === m.id || vs.bo2 === m.id || vs.bo3 === m.id) nbSemPrec++;
+      }
+      if (nbSemPrec >= 2) return false;
+    }
     return true;
   }
 
@@ -371,7 +504,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
 
     // 1) CS d'abord
     for (const poste of sortByConstraint(shuffle(postesCS.slice()))) {
-      const cands = stLocal.filter(m => peutFaire(m, poste.key) && !dejaAffecteJour(m, poste.key, resLocal));
+      const cands = stLocal.filter(m => peutFaire(m, poste.key, resLocal) && !dejaAffecteJour(m, poste.key, resLocal));
       if (cands.length === 0) { nonRemplis++; continue; }
       cands.sort((a, b) => scoreCS(b) - scoreCS(a));
       const c = cands[0];
@@ -382,7 +515,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
 
     // 2) BO ensuite
     for (const poste of sortByConstraint(shuffle(postesBO.slice()))) {
-      const cands = stLocal.filter(m => peutFaire(m, poste.key) && !dejaAffecteJour(m, poste.key, resLocal));
+      const cands = stLocal.filter(m => peutFaire(m, poste.key, resLocal) && !dejaAffecteJour(m, poste.key, resLocal));
       if (cands.length === 0) { nonRemplis++; continue; }
       cands.sort((a, b) => scoreBO(b) - scoreBO(a));
       const c = cands[0];
@@ -401,7 +534,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
         const v = resLocal[poste.key]||{};
         if (v[poste.slot] !== trop.id) continue;
         delete v[poste.slot]; trop.cs--; trop.u--;
-        if (peutFaire(manque, poste.key) && !dejaAffecteJour(manque, poste.key, resLocal)) {
+        if (peutFaire(manque, poste.key, resLocal) && !dejaAffecteJour(manque, poste.key, resLocal)) {
           v[poste.slot] = manque.id; manque.cs++; manque.u++; fait = true; break;
         } else { v[poste.slot] = trop.id; trop.cs++; trop.u++; }
       }
@@ -418,7 +551,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
         const v = resLocal[poste.key]||{};
         if (v[poste.slot] !== trop.id) continue;
         delete v[poste.slot]; trop.bo--; trop.u--;
-        if (peutFaire(manque, poste.key) && !dejaAffecteJour(manque, poste.key, resLocal)) {
+        if (peutFaire(manque, poste.key, resLocal) && !dejaAffecteJour(manque, poste.key, resLocal)) {
           v[poste.slot] = manque.id; manque.bo++; manque.u++; fait = true; break;
         } else { v[poste.slot] = trop.id; trop.bo++; trop.u++; }
       }
@@ -433,6 +566,19 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
     if (score < meilleurScore) {
       meilleurScore = score; meilleurResult = resLocal;
       meilleurNonRemplis = nonRemplis;
+    }
+  }
+
+  // Recalculer les _manque dans meilleurResult après optimisations
+  if(meilleurResult){
+    for(const poste of [...postesCS,...postesBO]){
+      const v=meilleurResult[poste.key]||{};
+      if(!v[poste.slot]){
+        if(!meilleurResult[poste.key])meilleurResult[poste.key]={};
+        if(!meilleurResult[poste.key]._manque)meilleurResult[poste.key]._manque=[];
+        if(!meilleurResult[poste.key]._manque.includes(poste.slot))
+          meilleurResult[poste.key]._manque.push(poste.slot);
+      }
     }
   }
 
@@ -525,22 +671,15 @@ function LoginView({onLogin}){
   const inp={width:"100%",padding:"13px 14px",background:"#f8faff",border:"1.5px solid "+T.border,borderRadius:12,fontSize:15,color:T.textPrimary,boxSizing:"border-box",outline:"none",marginBottom:14,transition:"border-color 0.15s"};
   return (
     <div style={{minHeight:"100vh",background:T.bg,display:"flex",flexDirection:"column",fontFamily:"'Inter',system-ui,sans-serif"}}>
-      <div style={{background:"linear-gradient(145deg,#4f6ef7 0%,#7c3aed 100%)",padding:"52px 24px 36px",textAlign:"center",position:"relative",overflow:"hidden"}}>
+      <div style={{background:"linear-gradient(145deg,rgba(30,40,100,0.75),rgba(80,20,130,0.80)),url('https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=1200&q=80') center/cover no-repeat",padding:"52px 24px 36px",textAlign:"center",position:"relative",overflow:"hidden"}}>
         <div style={{position:"absolute",top:-40,right:-40,width:180,height:180,borderRadius:"50%",background:"rgba(255,255,255,0.07)"}}/>
         <div style={{position:"absolute",bottom:-30,left:-30,width:140,height:140,borderRadius:"50%",background:"rgba(255,255,255,0.05)"}}/>
         <div style={{width:68,height:68,borderRadius:20,background:"rgba(255,255,255,0.2)",backdropFilter:"blur(8px)",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 18px",boxShadow:"0 8px 32px rgba(0,0,0,0.15)"}}>
           <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
         </div>
         <h1 style={{fontSize:30,fontWeight:800,color:"#fff",margin:"0 0 6px",letterSpacing:"-0.02em"}}>AnesPlanning</h1>
-        <p style={{color:"rgba(255,255,255,0.75)",fontSize:13,fontWeight:500,margin:"0 0 28px"}}>Département d'Anesthésie-Réanimation</p>
-        <div style={{display:"flex",justifyContent:"center",gap:12}}>
-          {[["7","Médecins"],["365","Jours/an"],["100%","Équité"]].map(([n,l])=>(
-            <div key={l} style={{background:"rgba(255,255,255,0.15)",backdropFilter:"blur(4px)",borderRadius:12,padding:"10px 14px",minWidth:72}}>
-              <div style={{fontSize:20,fontWeight:800,color:"#fff"}}>{n}</div>
-              <div style={{fontSize:10,color:"rgba(255,255,255,0.7)",marginTop:1}}>{l}</div>
-            </div>
-          ))}
-        </div>
+        <p style={{color:"rgba(255,255,255,0.75)",fontSize:13,fontWeight:500,margin:"0 0 28px"}}>Hôpital Privé d'Ambérieu</p>
+
       </div>
       <div style={{flex:1,padding:"28px 24px 40px"}}>
         <h2 style={{fontSize:20,fontWeight:800,color:T.textPrimary,margin:"0 0 4px"}}>Connexion</h2>
@@ -788,11 +927,19 @@ function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,csbo,setCsbo,bes
         // Supprimer seulement les gardes titulaires, garder les remplaçants
         while(d<=f){const key=dk(d);if(!gardesRemp[key])delete n[key];d.setDate(d.getDate()+1);}
         Object.assign(n,res.gardes);setGardes(n);setStats(res.stats);
-        showToast("Planning généré !");
+        if(res.gardesManquantes&&res.gardesManquantes.length>0){
+          setJoursManquants(prev=>({...prev,[p.id+"_gardes"]:res.gardesManquantes}));
+          showToast(res.gardesManquantes.length+" jour(s) sans garde !","error");
+        } else {
+          setJoursManquants(prev=>({...prev,[p.id+"_gardes"]:[]}));
+          showToast("Planning généré !");
+        }
       }catch(e){showToast("Erreur lors de la génération.","error");}
       setGen(null);
     }));
   };
+  const [joursManquants,setJoursManquants]=useState({});
+
   const genererCSBOPeriode=p=>{
     if(p.validee){showToast("Déverrouillez d'abord.","error");return;}
     setGen(p.id);
@@ -812,6 +959,16 @@ function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,csbo,setCsbo,bes
         }
         Object.assign(newCsbo,res.csbo);
         setCsbo(newCsbo);setStats(res.stats);
+        // Stocker les jours manquants pour affichage
+        if(res.nonRemplis>0){
+          const jm={};
+          Object.entries(res.csbo||{}).forEach(([key,v])=>{
+            if(v._manque&&v._manque.length>0)jm[key]=v._manque;
+          });
+          setJoursManquants(prev=>({...prev,[p.id]:jm}));
+        } else {
+          setJoursManquants(prev=>({...prev,[p.id]:{}}));
+        }
         const msg=res.nonRemplis>0?res.nonRemplis+" poste(s) non rempli(s)":"CS/BO générés !";
         showToast(msg,res.nonRemplis>0?"error":"success");
       }catch(e){console.error(e);showToast("Erreur CS/BO.","error");}
@@ -885,6 +1042,34 @@ function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,csbo,setCsbo,bes
                 {p.validee&&<Btn onClick={()=>deverr(p.id)} variant="warn" small>🔓 Déverrouiller</Btn>}
                 {!p.validee&&<Btn onClick={()=>supprimer(p.id)} variant="danger" small>Supprimer</Btn>}
               </div>
+              {joursManquants[p.id+"_gardes"]&&joursManquants[p.id+"_gardes"].length>0&&(
+                <div style={{marginTop:10,background:"#fff0f0",border:"1px solid #fca5a5",borderRadius:8,padding:"10px 12px"}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#b91c1c",marginBottom:6}}>⚠️ Jours sans garde :</div>
+                  <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                    {joursManquants[p.id+"_gardes"].map(key=>{
+                      const d=dkToDate(key);
+                      return <div key={key} style={{fontSize:12,fontWeight:700,color:"#991b1b"}}>{JOURS[d.getDay()]} {d.getDate()} {MOIS[d.getMonth()]}</div>;
+                    })}
+                  </div>
+                </div>
+              )}
+              {joursManquants[p.id]&&Object.keys(joursManquants[p.id]).length>0&&(
+                <div style={{marginTop:10,background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"10px 12px"}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#b45309",marginBottom:6}}>⚠️ Jours non pourvus :</div>
+                  <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                    {Object.entries(joursManquants[p.id]).sort(([a],[b])=>a.localeCompare(b)).map(([key,postes])=>{
+                      const d=dkToDate(key);
+                      return (
+                        <div key={key} style={{display:"flex",alignItems:"center",gap:8,fontSize:12}}>
+                          <span style={{fontWeight:700,color:"#92400e"}}>{JOURS[d.getDay()]} {d.getDate()} {MOIS[d.getMonth()]}</span>
+                          <span style={{color:"#b45309"}}>—</span>
+                          <span style={{color:"#78350f"}}>{postes.map(s=>s.toUpperCase()).join(", ")} manquant{postes.length>1?"s":""}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </Card>
           );
         })}
@@ -895,7 +1080,7 @@ function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,csbo,setCsbo,bes
 
 // ── PLANNING VISUEL ────────────────────────────────────────────────────────────
 
-function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,setStats,annee,remplacants,periodes,indispos,contraintes,isAdmin,showToast}){
+function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,annee,remplacants,periodes,indispos,contraintes,isAdmin,showToast}){
   const [moisActif,setMoisActif]=useState(new Date().getMonth());
   const [modalDate,setModalDate]=useState(null);
   const ja=useMemo(()=>tousJours(annee),[annee]);
@@ -982,6 +1167,47 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,setStats,annee,re
         })}
       </div>
 
+      {/* Bouton export PDF */}
+      <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
+        <button onClick={()=>{
+          const rows=semaines.map((sem)=>{
+            const semRow=`<tr><td colspan="${colonnes.length+1}" style="background:#e8ecff;color:#3b55e0;font-weight:700;font-size:9px;padding:3px 6px">Semaine ${numSem(sem[0].key)}</td></tr>`;
+            const dayRows=sem.map(j=>{
+              const date=dkToDate(j.key);
+              const estWE=[0,6].includes(j.js);
+              const gardeId2=gardes[j.key];
+              const csboJ2=csbo[j.key]||{};
+              const bg=estWE||j.ferie?"#f0f2fa":"#fff";
+              const dateCell=`<td style="padding:3px 6px;font-weight:700;background:#f7f9ff;border:1px solid #e0e4f4;white-space:nowrap;font-size:9px;color:${j.ferie?"#b45309":estWE?"#6b7280":"#333"}">${JOURS[j.js].slice(0,3)} ${date.getDate()}${j.ferie?" F":""}</td>`;
+              const cells=colonnes.map(m=>{
+                const remp2=gardeId2&&gardeId2.startsWith("PONCTUEL:")?{titulaireId:gardeId2.split(":")[1]}:null;
+                const gardeReel2=remp2?remp2.titulaireId:gardeId2;
+                const isG=gardeReel2===m.id;
+                const isCS=csboJ2.cs1===m.id||csboJ2.cs2===m.id;
+                const isBO=csboJ2.bo1===m.id||csboJ2.bo2===m.id||csboJ2.bo3===m.id;
+                let content="";
+                if(isG) content=`<span style="background:#fff0f0;color:#f03e3e;border:1px solid #fca5a5;border-radius:3px;padding:1px 5px;font-weight:800;font-size:9px">G</span>`;
+                else if(isCS) content=`<span style="background:#f0fdf6;color:#00b86b;border:1px solid #6ee7b7;border-radius:3px;padding:1px 4px;font-weight:800;font-size:9px">CS</span>`;
+                else if(isBO) content=`<span style="background:#eff2ff;color:#4f6ef7;border:1px solid #a5b4fc;border-radius:3px;padding:1px 4px;font-weight:800;font-size:9px">BO</span>`;
+                return `<td style="padding:2px;border:1px solid #e0e4f4;text-align:center;background:${bg}">${content}</td>`;
+              }).join("");
+              return `<tr>${dateCell}${cells}</tr>`;
+            }).join("");
+            return semRow+dayRows;
+          }).join("");
+          const headers=colonnes.map(m=>`<th style="background:#4f6ef7;color:#fff;padding:5px 4px;font-size:9px;font-weight:700;text-align:center">${m.nom.slice(0,7)}</th>`).join("");
+          const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Planning ${MOIS[moisActif]} ${annee}</title><style>body{font-family:Arial,sans-serif;margin:16px;}h2{margin:0 0 2px;font-size:16px;}table{width:100%;border-collapse:collapse;}@media print{@page{size:A4 landscape;margin:10mm;}}</style></head><body><h2>AnesPlanning — ${MOIS[moisActif]} ${annee}</h2><p style="color:#666;font-size:10px;margin:0 0 10px">Hôpital Privée d'Ambérieu</p><table><thead><tr><th style="background:#4f6ef7;color:#fff;padding:5px 6px;font-size:9px;text-align:left">Jour</th>${headers}</tr></thead><tbody>${rows}</tbody></table></body></html>`;
+          // Téléchargement direct
+          const a=document.createElement("a");
+          a.href="data:text/html;charset=utf-8,"+encodeURIComponent(html);
+          a.download="Planning_"+MOIS[moisActif]+"_"+annee+".html";
+          a.click();
+        }}
+          style={{display:"flex",alignItems:"center",gap:6,padding:"8px 14px",borderRadius:9,border:"1px solid #4f6ef7",background:"#eff2ff",color:"#4f6ef7",fontWeight:700,cursor:"pointer",fontSize:12}}>
+          📄 Exporter PDF
+        </button>
+      </div>
+
       {/* Légende */}
       <div style={{display:"flex",gap:10,marginBottom:14,flexWrap:"wrap",background:"#fff",borderRadius:10,padding:"8px 12px",border:"1px solid "+T.border}}>
         {[["#f03e3e","Garde"],["#00b86b","CS"],["#4f6ef7","BO"],["#e879a0","Indispo"],["#e5e7f0","WE / Férié"]].map(([c,l])=>(
@@ -998,7 +1224,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,setStats,annee,re
         <div style={{minWidth:colonnes.length*colW+72}}>
 
           {/* En-tête médecins — sticky */}
-          <div style={{display:"flex",position:"sticky",top:0,zIndex:10,background:T.bg,paddingBottom:6,paddingTop:2}}>
+          <div style={{display:"flex",position:"sticky",top:58,zIndex:10,background:T.bg,paddingBottom:6,paddingTop:4,boxShadow:"0 2px 8px rgba(79,110,247,0.08)"}}>
             <div style={{width:60,flexShrink:0,borderRight:"2px solid #e0e4f4"}}/>
             {colonnes.map(m=>{
               const c=getCouleur(m.id);
@@ -1023,6 +1249,21 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,setStats,annee,re
                 <span style={{fontSize:9,color:"rgba(255,255,255,0.6)"}}>
                   {dkToDate(sem[0].key).getDate()} – {dkToDate(sem[sem.length-1].key).getDate()} {MOIS[moisActif].slice(0,3)}.
                 </span>
+              </div>
+              {/* En-tête prénoms dans chaque semaine */}
+              <div style={{display:"flex",background:"#f0f4ff",borderBottom:"2px solid #d0d8f0"}}>
+                <div style={{width:60,flexShrink:0,borderRight:"2px solid #e0e4f4"}}/>
+                {colonnes.map(m=>{
+                  const c=getCouleur(m.id);
+                  return (
+                    <div key={m.id} style={{width:colW,flexShrink:0,padding:"3px 2px",textAlign:"center",boxSizing:"border-box"}}>
+                      <div style={{background:c.bg,color:c.text,border:"1px solid "+c.border,borderRadius:6,padding:"3px 2px",fontSize:9,fontWeight:800,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                        {m.nom.slice(0,6)}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div style={{width:28,flexShrink:0}}/>
               </div>
 
               {/* Lignes jours de la semaine */}
@@ -1065,9 +1306,10 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,setStats,annee,re
                       if(isCS) cells.push({color:"#00b86b",label:"CS",bg:"#f0fdf6",border:"#6ee7b7"});
                       if(isBO) cells.push({color:"#4f6ef7",label:"BO",bg:"#eff2ff",border:"#a5b4fc"});
 
+                      // Poste manquant pour ce jour (pas spécifique à un médecin — affiché dans 1ère colonne vide)
+                      const manqueJ=csboJ._manque||[];
                       const borderR=mi<colonnes.length-1?"1px solid #eef0f8":"none";
-
-                      if(isIndispo){
+                      if(isIndispo&&cells.length===0){
                         return (
                           <div key={m.id} style={{width:colW,flexShrink:0,borderRight:borderR,background:"#fdf2f8",display:"flex",alignItems:"center",justifyContent:"center",padding:"2px"}}>
                             <div style={{width:"90%",background:"#fce7f3",border:"1px solid #f9a8d4",borderRadius:5,textAlign:"center",padding:"2px 0",fontSize:9,fontWeight:800,color:"#be185d"}}>✕</div>
@@ -1075,9 +1317,12 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,setStats,annee,re
                         );
                       }
 
+
+
                       if(estGrise&&cells.length===0){
                         return <div key={m.id} style={{width:colW,flexShrink:0,borderRight:borderR,background:"#eaecf5"}}/>;
                       }
+
 
                       return (
                         <div key={m.id}
@@ -2466,49 +2711,161 @@ function VueContraintes({contraintes,setContraintes,currentUser}){
 
 // ── MON PLANNING ───────────────────────────────────────────────────────────────
 
-function VueMonPlanning({gardes,currentUser,annee}){
+function VueMonPlanning({gardes,bos,csbo,currentUser,annee}){
   const ja=useMemo(()=>tousJours(annee),[annee]);
-  const mes=ja.filter(j=>gardes[j.key]===currentUser.id);
-  const parMois=MOIS.map((m,i)=>({mois:m,jours:mes.filter(j=>dkToDate(j.key).getMonth()===i)})).filter(x=>x.jours.length>0);
+  const today=dk(new Date());
+  const feries=useMemo(()=>joursFeries(annee),[annee]);
+
+  // Statut du jour
+  const statutAujourdhui=(()=>{
+    const g=gardes[today];
+    const gardeReel=g&&g.startsWith("PONCTUEL:")?g.split(":")[1]:g;
+    if(gardeReel===currentUser.id) return "garde";
+    if(bos&&bos[today]===currentUser.id) return "bo";
+    const v=csbo[today]||{};
+    if(v.cs1===currentUser.id||v.cs2===currentUser.id) return "cs";
+    if(v.bo1===currentUser.id||v.bo2===currentUser.id||v.bo3===currentUser.id) return "bo";
+    // Repos de garde = garde hier
+    const hier=dk(new Date(new Date().getFullYear(),new Date().getMonth(),new Date().getDate()-1));
+    const gHier=gardes[hier];
+    const gardeReelHier=gHier&&gHier.startsWith("PONCTUEL:")?gHier.split(":")[1]:gHier;
+    if(gardeReelHier===currentUser.id) return "repos_garde";
+    return "repos";
+  })();
+
+  const configs={
+    garde:{
+      gradient:"linear-gradient(145deg,#f03e3e,#c92a2a)",
+      emoji:"🛡️",
+      titre:"Vous êtes de garde",
+      message:"Une nuit importante vous attend. Restez attentif, vous êtes le rempart de vos patients ce soir.",
+      badge:"GARDE",
+      badgeBg:"rgba(255,255,255,0.2)",
+    },
+    cs:{
+      gradient:"linear-gradient(145deg,#00b86b,#087f5b)",
+      emoji:"🩺",
+      titre:"Vous êtes en consultation",
+      message:"Une belle journée de consultations vous attend. Chaque patient compte sur votre expertise.",
+      badge:"CS",
+      badgeBg:"rgba(255,255,255,0.2)",
+    },
+    bo:{
+      gradient:"linear-gradient(145deg,#4f6ef7,#3b55e0)",
+      emoji:"⚕️",
+      titre:"Vous êtes au bloc",
+      message:"Le bloc opératoire vous attend. Concentration, précision, excellence — votre quotidien.",
+      badge:"BO",
+      badgeBg:"rgba(255,255,255,0.2)",
+    },
+    repos_garde:{
+      gradient:"linear-gradient(145deg,#7c3aed,#5b21b6)",
+      emoji:"😴",
+      titre:"Repos post-garde",
+      message:"Vous avez assuré hier soir. Reposez-vous bien, vous l'avez amplement mérité.",
+      badge:"REPOS DE GARDE",
+      badgeBg:"rgba(255,255,255,0.2)",
+    },
+    repos:{
+      gradient:"linear-gradient(145deg,#0ea5e9,#0369a1)",
+      emoji:"☀️",
+      titre:"Vous êtes en repos",
+      message:"Profitez pleinement de cette journée ! Déconnectez, rechargez les batteries, vous le méritez.",
+      badge:"REPOS",
+      badgeBg:"rgba(255,255,255,0.2)",
+    },
+  };
+
+  const cfg=configs[statutAujourdhui];
+  const dateAuj=new Date();
+  const dateStr=JOURS[dateAuj.getDay()]+" "+dateAuj.getDate()+" "+MOIS[dateAuj.getMonth()]+" "+annee;
+  const estFerie=feries.has(today);
+
+  // Prochaines affectations
+  const prochaines=ja.filter(j=>j.key>today).filter(j=>{
+    const g=gardes[j.key];
+    const gardeReel=g&&g.startsWith("PONCTUEL:")?g.split(":")[1]:g;
+    if(gardeReel===currentUser.id) return true;
+    if(bos&&bos[j.key]===currentUser.id) return true;
+    const v=csbo[j.key]||{};
+    return v.cs1===currentUser.id||v.cs2===currentUser.id||v.bo1===currentUser.id||v.bo2===currentUser.id||v.bo3===currentUser.id;
+  }).slice(0,5).map(j=>{
+    const g=gardes[j.key];
+    const gardeReel=g&&g.startsWith("PONCTUEL:")?g.split(":")[1]:g;
+    const v=csbo[j.key]||{};
+    const postes=[];
+    if(gardeReel===currentUser.id) postes.push({label:"Garde",color:"#f03e3e",bg:"#fff0f0",border:"#fca5a5"});
+    if(bos&&bos[j.key]===currentUser.id) postes.push({label:"BO",color:"#4f6ef7",bg:"#eff2ff",border:"#a5b4fc"});
+    if(v.cs1===currentUser.id||v.cs2===currentUser.id) postes.push({label:"CS",color:"#00b86b",bg:"#f0fdf6",border:"#6ee7b7"});
+    if(v.bo1===currentUser.id||v.bo2===currentUser.id||v.bo3===currentUser.id) postes.push({label:"BO",color:"#4f6ef7",bg:"#eff2ff",border:"#a5b4fc"});
+    const date=dkToDate(j.key);
+    return {key:j.key,date,postes,js:j.js,ferie:j.ferie};
+  });
+
   return (
-    <div>
-      <div style={{background:"linear-gradient(135deg,rgba(79,110,247,0.08),rgba(124,58,237,0.05))",border:"1px solid rgba(79,110,247,0.15)",borderRadius:14,padding:20,marginBottom:20,display:"flex",alignItems:"center",gap:16}}>
-        <div style={{width:52,height:52,borderRadius:14,background:"linear-gradient(135deg,#4f6ef7,#7c3aed)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:22,color:"#fff",flexShrink:0}}>{currentUser.nom[0]}</div>
-        <div style={{flex:1}}>
-          <div style={{fontSize:18,fontWeight:800,color:T.textPrimary}}>Dr {currentUser.nom}</div>
-          <div style={{fontSize:13,color:T.textSecondary,marginTop:2}}>{mes.length} gardes planifiées en {annee}</div>
+    <div style={{paddingBottom:8}}>
+      {/* Carte principale du jour */}
+      <div style={{background:cfg.gradient,borderRadius:20,padding:"28px 20px 24px",marginBottom:20,boxShadow:"0 8px 32px rgba(0,0,0,0.15)",position:"relative",overflow:"hidden"}}>
+        <div style={{position:"absolute",top:-30,right:-30,width:140,height:140,borderRadius:"50%",background:"rgba(255,255,255,0.07)"}}/>
+        <div style={{position:"absolute",bottom:-20,left:-20,width:100,height:100,borderRadius:"50%",background:"rgba(255,255,255,0.05)"}}/>
+
+        <div style={{fontSize:10,color:"rgba(255,255,255,0.7)",fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>
+          {dateStr}{estFerie&&" · Jour férié 🎉"}
         </div>
-        <div style={{textAlign:"right"}}>
-          <div style={{fontSize:28,fontWeight:800,color:T.teal}}>{mes.length}</div>
-          <div style={{fontSize:10,color:T.textMuted}}>gardes</div>
+
+        <div style={{fontSize:52,marginBottom:8,lineHeight:1}}>{cfg.emoji}</div>
+
+        <div style={{fontSize:11,fontWeight:700,background:cfg.badgeBg,color:"#fff",borderRadius:20,padding:"3px 10px",display:"inline-block",marginBottom:10,letterSpacing:"0.06em"}}>
+          {cfg.badge}
         </div>
+
+        <h2 style={{fontSize:22,fontWeight:800,color:"#fff",margin:"0 0 10px",lineHeight:1.2}}>
+          Bonjour {currentUser.nom},<br/>{cfg.titre}
+        </h2>
+
+        <p style={{fontSize:13,color:"rgba(255,255,255,0.85)",margin:0,lineHeight:1.6,fontStyle:"italic"}}>
+          "{cfg.message}"
+        </p>
       </div>
-      {mes.length===0&&<p style={{color:T.textMuted,fontSize:13,textAlign:"center",padding:"32px 0"}}>Aucune garde planifiée. Contactez l'administrateur.</p>}
-      {parMois.map(({mois,jours})=>(
-        <div key={mois} style={{marginBottom:16}}>
-          <SectionTitle>{mois} · {jours.length} garde{jours.length>1?"s":""}</SectionTitle>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-            {jours.map(j=>{
-              const estWE=[0,6].includes(j.js),date=dkToDate(j.key);
+
+      {/* Prochaines affectations */}
+      {prochaines.length>0?(
+        <div>
+          <SectionTitle>Prochaines affectations</SectionTitle>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {prochaines.map(p=>{
+              const date=p.date;
+              const estWE=[0,6].includes(p.js);
               return (
-                <Card key={j.key} style={{padding:"12px 14px",borderLeft:"3px solid #f03e3e"}}>
-                  <div style={{fontSize:13,fontWeight:700,color:T.textPrimary}}>
-                    {JOURS[j.js]} {date.getDate()}
-                    {j.ferie&&<span style={{marginLeft:5,fontSize:8,background:"rgba(245,158,11,0.2)",color:"#f59e0b",borderRadius:3,padding:"1px 4px",fontWeight:700}}>FÉRIÉ</span>}
+                <div key={p.key} style={{background:"#fff",borderRadius:12,padding:"12px 14px",border:"1px solid "+T.border,display:"flex",alignItems:"center",gap:12,boxShadow:"0 1px 4px rgba(79,110,247,0.06)"}}>
+                  <div style={{textAlign:"center",minWidth:44,background:estWE?"#f0f2fa":p.ferie?"#fef3c7":"#f0f4ff",borderRadius:10,padding:"6px 8px"}}>
+                    <div style={{fontSize:10,fontWeight:600,color:p.ferie?"#b45309":estWE?"#6b7280":"#4f6ef7",textTransform:"uppercase"}}>{JOURS[date.getDay()].slice(0,3)}</div>
+                    <div style={{fontSize:20,fontWeight:800,color:p.ferie?"#b45309":estWE?"#374151":T.textPrimary,lineHeight:1.1}}>{date.getDate()}</div>
+                    <div style={{fontSize:9,color:T.textMuted}}>{MOIS[date.getMonth()].slice(0,3)}</div>
                   </div>
-                  <div style={{marginTop:6,display:"flex",gap:4,flexWrap:"wrap"}}>
-                    <span style={{fontSize:10,fontWeight:700,color:"#f03e3e",background:"rgba(240,62,62,0.08)",borderRadius:4,padding:"2px 6px"}}>GARDE</span>
-                    {estWE&&<span style={{fontSize:10,color:T.textMuted,background:T.bg,borderRadius:4,padding:"2px 6px",border:"1px solid "+T.border}}>WE</span>}
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                    {p.postes.map((pos,i)=>(
+                      <span key={i} style={{background:pos.bg,color:pos.color,border:"1px solid "+pos.border,borderRadius:6,padding:"4px 10px",fontWeight:800,fontSize:12}}>
+                        {pos.label}
+                      </span>
+                    ))}
                   </div>
-                </Card>
+                </div>
               );
             })}
           </div>
         </div>
-      ))}
+      ):(
+        <div style={{textAlign:"center",padding:"32px 16px",color:T.textMuted}}>
+          <div style={{fontSize:36,marginBottom:8,opacity:0.3}}>📅</div>
+          <p style={{fontWeight:600,fontSize:14,color:T.textSecondary,margin:"0 0 4px"}}>Aucune affectation à venir</p>
+          <p style={{fontSize:12,margin:0}}>Contactez l'administrateur pour générer le planning.</p>
+        </div>
+      )}
     </div>
   );
 }
+
 
 // ── APP ────────────────────────────────────────────────────────────────────────
 
@@ -2582,9 +2939,9 @@ export default function App(){
             <p style={{fontSize:15,fontWeight:600,color:T.textSecondary,margin:"0 0 6px"}}>Aucun planning pour {annee}</p>
             <p style={{fontSize:13,margin:0}}>Allez dans <strong style={{color:T.teal}}>Périodes</strong> pour générer.</p>
           </div>
-          :<VuePlanning gardes={gardes} setGardes={setGardes} bos={bos} setBos={setBos} csbo={csbo} setCsbo={setCsbo} setStats={setStats} annee={annee} remplacants={remplacants} periodes={periodes} indispos={indispos} contraintes={contraintes} isAdmin={isAdmin} showToast={showToast}/>
+          :<VuePlanning gardes={gardes} setGardes={setGardes} bos={bos} setBos={setBos} csbo={csbo} setCsbo={setCsbo} besoins={besoins} setStats={setStats} annee={annee} remplacants={remplacants} periodes={periodes} indispos={indispos} contraintes={contraintes} isAdmin={isAdmin} showToast={showToast}/>
         )}
-        {tab==="monplanning"&&<VueMonPlanning gardes={gardes} currentUser={user} annee={annee}/>}
+        {tab==="monplanning"&&<VueMonPlanning gardes={gardes} bos={bos} csbo={csbo} currentUser={user} annee={annee}/>}
         {tab==="besoins"&&<VueBesoins besoins={besoins} setBesoins={setBesoins} annee={annee} isAdmin={isAdmin}/>}
         {tab==="echanges"&&<VueEchanges echanges={echanges} setEchanges={setEchanges} gardes={gardes} setGardes={setGardes} csbo={csbo} setCsbo={setCsbo} bos={bos} setBos={setBos} currentUser={user} annee={annee} showToast={showToast}/>}
         {tab==="equite"&&<VueEquite gardes={gardes} bos={bos} csbo={csbo} annee={annee}/>}
