@@ -395,9 +395,15 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
     const b = getBesoin(j.key, j.ferie, j.js);
     if (b.cs1 && !fixe.cs1) postesCS.push({ key: j.key, slot: 'cs1', ferie: j.ferie });
     if (b.cs2 && !fixe.cs2) postesCS.push({ key: j.key, slot: 'cs2', ferie: j.ferie });
-    if (b.bo1 && !fixe.bo1) postesBO.push({ key: j.key, slot: 'bo1', ferie: j.ferie });
-    if (b.bo2 && !fixe.bo2) postesBO.push({ key: j.key, slot: 'bo2', ferie: j.ferie });
-    if (b.bo3 && !fixe.bo3) postesBO.push({ key: j.key, slot: 'bo3', ferie: j.ferie });
+    // Slots BO demandés ce jour
+    const slotsBO = [];
+    if (b.bo1 && !fixe.bo1) slotsBO.push('bo1');
+    if (b.bo2 && !fixe.bo2) slotsBO.push('bo2');
+    if (b.bo3 && !fixe.bo3) slotsBO.push('bo3');
+    // Un remplaçant en journée (bos) occupe un poste BO → on en retire autant
+    const rempBO = bos[j.key] ? 1 : 0;
+    const slotsBORestants = slotsBO.slice(rempBO);
+    for (const slot of slotsBORestants) postesBO.push({ key: j.key, slot, ferie: j.ferie });
   }
 
   const totalCS = postesCS.length, totalBO = postesBO.length;
@@ -927,6 +933,21 @@ function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,csbo,setCsbo,bes
         // Supprimer seulement les gardes titulaires, garder les remplaçants
         while(d<=f){const key=dk(d);if(!gardesRemp[key])delete n[key];d.setDate(d.getDate()+1);}
         Object.assign(n,res.gardes);setGardes(n);setStats(res.stats);
+        // La garde est prioritaire : retirer tout CS/BO d'un médecin les jours où il est de garde
+        const ncsbo={...csbo};let nbConflits=0;
+        const dC=dkToDate(p.debut),fC=dkToDate(p.fin);
+        while(dC<=fC){
+          const key=dk(dC);
+          const g=n[key];
+          const gid=g?(g.startsWith("PONCTUEL:")?g.split(":")[1]:g):null;
+          if(gid&&ncsbo[key]){
+            const v={...ncsbo[key]};let modif=false;
+            ["cs1","cs2","bo1","bo2","bo3"].forEach(s=>{if(v[s]===gid){delete v[s];modif=true;nbConflits++;}});
+            if(modif)ncsbo[key]=v;
+          }
+          dC.setDate(dC.getDate()+1);
+        }
+        if(nbConflits>0)setCsbo(ncsbo);
         if(res.gardesManquantes&&res.gardesManquantes.length>0){
           setJoursManquants(prev=>({...prev,[p.id+"_gardes"]:res.gardesManquantes}));
           showToast(res.gardesManquantes.length+" jour(s) sans garde !","error");
@@ -1137,6 +1158,14 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
         n[dateKey]="PONCTUEL:"+(tid||"inconnu")+":"+nomRemp;
       }
     } else{n[dateKey]=medecinId;}
+    // La garde est prioritaire : retirer tout CS/BO du même médecin ce jour-là
+    const gg=n[dateKey];
+    const gid=gg?(gg.startsWith("PONCTUEL:")?gg.split(":")[1]:gg):null;
+    if(gid&&csbo[dateKey]){
+      const v={...csbo[dateKey]};let modif=false;
+      ["cs1","cs2","bo1","bo2","bo3"].forEach(s=>{if(v[s]===gid){delete v[s];modif=true;}});
+      if(modif)setCsbo({...csbo,[dateKey]:v});
+    }
     setGardes(n);setModalDate(null);showToast("Garde mise à jour ✓");
   };
 
