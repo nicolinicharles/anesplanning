@@ -1,6 +1,18 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
+// Empêche la traduction automatique du navigateur (Google Translate casse le rendu React)
+if (typeof document !== "undefined") {
+  document.documentElement.setAttribute("translate", "no");
+  document.documentElement.classList.add("notranslate");
+  if (!document.querySelector('meta[name="google"]')) {
+    const m = document.createElement("meta");
+    m.name = "google";
+    m.content = "notranslate";
+    document.head && document.head.appendChild(m);
+  }
+}
+
 // ── STORAGE PERSISTANT (Supabase) ───────────────────────────────────────────────
 
 const supabase = createClient(
