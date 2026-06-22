@@ -1285,7 +1285,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
 
           {/* En-tête médecins — sticky */}
           <div style={{display:"flex",position:"sticky",top:58,zIndex:10,background:T.bg,paddingBottom:6,paddingTop:4,boxShadow:"0 2px 8px rgba(79,110,247,0.08)"}}>
-            <div style={{width:60,flexShrink:0,borderRight:"2px solid #e0e4f4"}}/>
+            <div style={{width:60,flexShrink:0,boxSizing:"border-box",borderRight:"2px solid #e0e4f4"}}/>
             {colonnes.map(m=>{
               const c=getCouleur(m.id);
               return (
@@ -1312,7 +1312,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
               </div>
               {/* En-tête prénoms dans chaque semaine */}
               <div style={{display:"flex",background:"#f0f4ff",borderBottom:"2px solid #d0d8f0"}}>
-                <div style={{width:60,flexShrink:0,borderRight:"2px solid #e0e4f4"}}/>
+                <div style={{width:60,flexShrink:0,boxSizing:"border-box",borderRight:"2px solid #e0e4f4"}}/>
                 {colonnes.map(m=>{
                   const c=getCouleur(m.id);
                   return (
@@ -1340,7 +1340,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
                 return (
                   <div key={j.key} style={{display:"flex",borderTop:ji>0?"1px solid #eef0f8":"none",background:estGrise?"#f0f2fa":"#fff",minHeight:34}}>
                     {/* Date */}
-                    <div style={{width:60,flexShrink:0,padding:"5px 8px",display:"flex",flexDirection:"column",justifyContent:"center",borderRight:"2px solid #e0e4f4",background:estGrise?"#e8ebf5":estWE||estF?"#f0f2fa":"#f7f9ff"}}>
+                    <div style={{width:60,flexShrink:0,boxSizing:"border-box",padding:"5px 8px",display:"flex",flexDirection:"column",justifyContent:"center",borderRight:"2px solid #e0e4f4",background:estGrise?"#e8ebf5":estWE||estF?"#f0f2fa":"#f7f9ff"}}>
                       <div style={{fontSize:11,fontWeight:800,color:estF?"#b45309":estWE?"#6b7280":T.textPrimary,lineHeight:1.2}}>
                         {JOURS[j.js].slice(0,3)} {date.getDate()}
                       </div>
@@ -1371,7 +1371,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
                       const borderR=mi<colonnes.length-1?"1px solid #eef0f8":"none";
                       if(isIndispo&&cells.length===0){
                         return (
-                          <div key={m.id} style={{width:colW,flexShrink:0,borderRight:borderR,background:"#fdf2f8",display:"flex",alignItems:"center",justifyContent:"center",padding:"2px"}}>
+                          <div key={m.id} style={{width:colW,flexShrink:0,boxSizing:"border-box",borderRight:borderR,background:"#fdf2f8",display:"flex",alignItems:"center",justifyContent:"center",padding:"2px"}}>
                             <div style={{width:"90%",background:"#fce7f3",border:"1px solid #f9a8d4",borderRadius:5,textAlign:"center",padding:"2px 0",fontSize:9,fontWeight:800,color:"#be185d"}}>✕</div>
                           </div>
                         );
@@ -1380,7 +1380,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
 
 
                       if(estGrise&&cells.length===0){
-                        return <div key={m.id} style={{width:colW,flexShrink:0,borderRight:borderR,background:"#eaecf5"}}/>;
+                        return <div key={m.id} style={{width:colW,flexShrink:0,boxSizing:"border-box",borderRight:borderR,background:"#eaecf5"}}/>;
                       }
 
 
@@ -1418,7 +1418,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
 
 // ── REMPLAÇANTS ────────────────────────────────────────────────────────────────
 
-function VueRemplacants({remplacants,setRemplacants,gardes,setGardes,bos,setBos,annee,showToast,isAdmin}){
+function VueRemplacants({remplacants,setRemplacants,gardes,setGardes,bos,setBos,csbo,setCsbo,annee,showToast,isAdmin}){
   const [nom,setNom]=useState("");
   const [selRemp,setSelRemp]=useState(null);
   const [mois,setMois]=useState(new Date().getMonth());
@@ -1457,9 +1457,21 @@ function VueRemplacants({remplacants,setRemplacants,gardes,setGardes,bos,setBos,
       setGardes(n);
     } else {
       const n={...bos};
-      if(n[key]===selRemp){delete n[key];}
-      else{n[key]=selRemp;}
-      setBos(n);
+      if(n[key]===selRemp){
+        delete n[key];
+        setBos(n);
+      } else {
+        n[key]=selRemp;
+        setBos(n);
+        // Le remplaçant occupe un poste BO ce jour-là : on retire un BO titulaire
+        if(csbo&&csbo[key]){
+          const v={...csbo[key]};
+          if(v.bo3!==undefined) delete v.bo3;
+          else if(v.bo2!==undefined) delete v.bo2;
+          else if(v.bo1!==undefined) delete v.bo1;
+          setCsbo({...csbo,[key]:v});
+        }
+      }
     }
   };
 
@@ -3039,7 +3051,7 @@ export default function App(){
         {tab==="echanges"&&<VueEchanges echanges={echanges} setEchanges={setEchanges} gardes={gardes} setGardes={setGardes} csbo={csbo} setCsbo={setCsbo} bos={bos} setBos={setBos} currentUser={user} annee={annee} showToast={showToast}/>}
         {tab==="equite"&&<VueEquite gardes={gardes} bos={bos} csbo={csbo} annee={annee}/>}
         {tab==="indispos"&&<VueIndispos indispos={indispos} setIndispos={setIndispos} currentUser={user} annee={annee}/>}
-        {tab==="remplacants"&&<VueRemplacants remplacants={remplacants} setRemplacants={setRemplacants} gardes={gardes} setGardes={setGardes} bos={bos} setBos={setBos} annee={annee} showToast={showToast} isAdmin={isAdmin}/>}
+        {tab==="remplacants"&&<VueRemplacants remplacants={remplacants} setRemplacants={setRemplacants} gardes={gardes} setGardes={setGardes} bos={bos} setBos={setBos} csbo={csbo} setCsbo={setCsbo} annee={annee} showToast={showToast} isAdmin={isAdmin}/>}
         {tab==="contraintes"&&<VueContraintes contraintes={contraintes} setContraintes={setContraintes} currentUser={user}/>}
       </div>
       <BottomNav tab={tab} setTab={setTab} isAdmin={isAdmin} nbDemandes={echanges.filter(e=>e.cibleId===user?.id&&e.statut==="en_attente").length}/>
