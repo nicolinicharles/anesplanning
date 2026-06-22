@@ -2936,7 +2936,8 @@ export default function App(){
   const [toast,setToast]=useState(null);
   const [menu,setMenu]=useState(false);
   const [loading,setLoading]=useState(true);
-  const applyingRemote=useRef(false);
+  const clientId=useRef(Math.random().toString(36).slice(2)+Date.now());
+  const suppressSaveUntil=useRef(0);
   const showToast=useCallback((msg,type="success")=>setToast({msg,type}),[]);
 
   // Chargement initial
@@ -2967,7 +2968,10 @@ export default function App(){
         (payload)=>{
           const d=payload.new&&payload.new.data;
           if(!d)return;
-          applyingRemote.current=true;
+          // Ignorer nos propres écritures (sinon l'app s'écrase elle-même en plein milieu d'une action)
+          if(d._client===clientId.current)return;
+          // On vient de recevoir l'état d'un autre appareil : ne pas le re-sauvegarder juste après
+          suppressSaveUntil.current=Date.now()+1500;
           setGardes(d.gardes||{});
           setBos(d.bos||{});
           setCsbo(d.csbo||{});
@@ -2986,9 +2990,9 @@ export default function App(){
   // Sauvegarde automatique (avec léger délai) quand les données changent
   useEffect(()=>{
     if(loading) return;
-    if(applyingRemote.current){applyingRemote.current=false;return;}
+    if(Date.now()<suppressSaveUntil.current) return;
     const t=setTimeout(()=>{
-      storageSet(STORAGE_KEY,{gardes,bos,csbo,besoins,echanges,indispos,contraintes,periodes,remplacants,stats});
+      storageSet(STORAGE_KEY,{gardes,bos,csbo,besoins,echanges,indispos,contraintes,periodes,remplacants,stats,_client:clientId.current});
     },600);
     return ()=>clearTimeout(t);
   },[gardes,bos,csbo,besoins,echanges,indispos,contraintes,periodes,remplacants,stats,loading]);
