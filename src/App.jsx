@@ -538,7 +538,7 @@ function lendemain(key){ const d=dkToDate(key); return dk(new Date(d.getFullYear
 
 // Retire les CS/BO incompatibles avec les gardes : le jour de la garde, et le lendemain (repos de garde)
 // pour le médecin qui a réellement fait la garde. Renvoie {csbo, nb}.
-function retirerConflitsGarde(csbo, gardes, keys){
+function retirerConflitsGarde(csbo, gardes, keys, lendemainAussi = true){
   const nc={...csbo}; let nb=0;
   const retirer=(k,id)=>{ if(!id||!nc[k])return; const v={...nc[k]}; let modif=false;
     SLOTS_CSBO.forEach(sl=>{ if(v[sl]===id){ delete v[sl]; modif=true; nb++; } });
@@ -547,7 +547,7 @@ function retirerConflitsGarde(csbo, gardes, keys){
     const g=gardes[key]; if(!g) continue;
     const ponctuel=String(g).startsWith("PONCTUEL:");
     retirer(key, ponctuel?g.split(":")[1]:g);       // même jour
-    if(!ponctuel) retirer(lendemain(key), g);         // repos de garde
+    if(!ponctuel && lendemainAussi) retirer(lendemain(key), g);   // repos de garde (génération automatique)
   }
   return {csbo:nc, nb};
 }
@@ -626,7 +626,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
       cs1: override.cs1 !== undefined ? override.cs1 : (estSemaine ? 1 : 0),
       cs2: override.cs2 !== undefined ? override.cs2 : 0,
       bo1: override.bo1 !== undefined ? override.bo1 : (estSemaine ? 1 : 0),
-      bo2: override.bo2 !== undefined ? override.bo2 : (estSemaine ? 1 : 0),
+      bo2: override.bo2 !== undefined ? override.bo2 : (estSemaine && js !== 5 ? 1 : 0), // pas de BO2 le vendredi
       bo3: override.bo3 !== undefined ? override.bo3 : 0,
       bom: override.bom !== undefined ? override.bom : (estSemaine && js === 5 ? 1 : 0),   // vendredi
       bocs: override.bocs !== undefined ? override.bocs : (estSemaine && js === 2 ? 1 : 0), // mardi
@@ -1223,7 +1223,6 @@ function appliquerPosteCase(gardes, csbo, key, medId, choix){
   if(slot) v[slot]=medId;
   if(v._manque){ v._manque=v._manque.filter(x=>x!==slot); if(!v._manque.length) delete v._manque; }
   if(Object.keys(v).length===0) delete nc[key]; else nc[key]=v;
-  if(choix==="garde") return {gardes:ng, csbo:retirerConflitsGarde(nc, ng, [key]).csbo};
   return {gardes:ng, csbo:nc};
 }
 // Slot utilisé pour un choix : le premier libre, sinon le dernier (dont le titulaire sera remplacé)
@@ -1256,9 +1255,10 @@ function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,an
   const indispo=indispos.find(i=>i.medecinId===medecin.id&&dateKey>=i.dateDebut&&dateKey<=i.dateFin);
   const periodeValidee=periodes.some(p=>p.annee===annee&&p.validee&&dateKey>=p.debut&&dateKey<=p.fin);
   const gardeDe=k=>{const x=gardes[k];return x?(String(x).startsWith("PONCTUEL:")?x.split(":")[1]:x):null;};
-  // Repos de garde : interdit de faire un CS/BO le lendemain d'une garde (si la garde n'a pas été remplacée)
+  // Lendemain de garde : l'algorithme n'y met jamais de CS/BO, mais on peut le faire à la main (signalé)
   const reposDeGarde=gardes[decal(-1)]===medecin.id;
-  const interditRepos=id=>reposDeGarde&&["cs","bo","bom","bocs"].includes(id);
+  const lendemainGarde=id=>reposDeGarde&&["cs","bo","bom","bocs"].includes(id);
+  const interditRepos=()=>false;
 
   // Messages pour le choix en cours
   const infos=[], alertes=[];
@@ -1280,11 +1280,12 @@ function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,an
       if(gardeDe(decal(-1))===medecin.id) alertes.push("Déjà de garde la veille");
       if(gardeDe(decal(1))===medecin.id) alertes.push("Déjà de garde le lendemain");
       const v=gardeViolee(medecin.id,dateKey,contraintes,gardes); if(v) alertes.push(v);
-      if(slotDuMedecin(csbo[decal(1)]||{},medecin.id)) infos.push("Son CS/BO du lendemain sera retiré (repos de garde)");
+      if(slotDuMedecin(csbo[decal(1)]||{},medecin.id)) infos.push("Il a déjà un poste le lendemain : il sera marqué « lendemain de garde »");
     } else {
       if([0,6].includes(js)||ferie) infos.push("Week-end ou férié");
     }
   }
+  if(lendemainGarde(choix)) alertes.push("Lendemain de garde");
   // Règle « max X <jour> travaillés par mois »
   if(choix!=="libre"){
     const cMax=contraintes.find(x=>x.medecinId===medecin.id&&x.type==="max_par_mois"&&x.valeur===jourFr(js));
@@ -1318,9 +1319,6 @@ function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,an
             );
           })}
         </div>
-        {reposDeGarde&&interditRepos(actuel)&&(
-          <div style={{fontSize:12,color:"#b91c1c",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,padding:"6px 10px",marginBottom:8}}>⛔ De garde la veille : ce poste est interdit, choisis « Libre » ou « Garde »</div>
-        )}
         {(infos.length>0||alertes.length>0)&&(
           <div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:12}}>
             {alertes.map((a,i)=><div key={"a"+i} style={{fontSize:12,color:"#b45309",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"6px 10px"}}>⚠️ {a}</div>)}
@@ -1616,7 +1614,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
       }
     } else{n[dateKey]=medecinId;}
     // La garde est prioritaire : retirer les CS/BO du médecin de garde le jour même et le lendemain
-    const rc=retirerConflitsGarde(csbo,n,[dateKey]);
+    const rc=retirerConflitsGarde(csbo,n,[dateKey],false);
     if(rc.nb>0)setCsbo(rc.csbo);
     setGardes(n);setModalDate(null);showToast("Garde mise à jour ✓");
   };
@@ -1776,7 +1774,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
                       if(isBosRemp) cells.push({color:"#4f6ef7",label:"BO",bg:"#eff2ff",border:"#a5b4fc"});
                       const veilleK=dk(new Date(date.getFullYear(),date.getMonth(),date.getDate()-1));
                       const enRepos=tpJ&&gardes[veilleK]===m.id;
-                      if(tpJ) cells.push(enRepos?{...POSTE_AFFICHAGE[tpJ],color:"#b91c1c",bg:"#fef2f2",border:"#f87171",violation:"Interdit : garde la veille"}:{...POSTE_AFFICHAGE[tpJ]});
+                      if(tpJ) cells.push(enRepos?{...POSTE_AFFICHAGE[tpJ],border:"#f59e0b",note:"lendemain de garde"}:{...POSTE_AFFICHAGE[tpJ]});
 
                       // Poste manquant pour ce jour (pas spécifique à un médecin — affiché dans 1ère colonne vide)
                       const manqueJ=csboJ._manque||[];
@@ -1811,6 +1809,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
                               <div key={ci} title={cell.violation||""} style={{borderRadius:5,padding:"2px 3px",textAlign:"center",background:cell.bg,border:"1px solid "+cell.border,fontSize:cell.label.length>3?8:9,fontWeight:800,color:cell.color,lineHeight:1.4,boxShadow:"0 1px 2px rgba(0,0,0,0.04)",wordBreak:"break-word",whiteSpace:"normal",position:"relative"}}>
                                 {cell.violation&&<span style={{position:"absolute",top:-3,right:-3,fontSize:8}}>⚠️</span>}
                                 {cell.label}
+                                {cell.note&&<div style={{fontSize:7,fontWeight:700,color:"#b45309",lineHeight:1.1}}>{cell.note}</div>}
                               </div>
                             ))
                           }
@@ -2243,7 +2242,7 @@ function VueEchanges({echanges,setEchanges,gardes,setGardes,csbo,setCsbo,bos,set
       }
       setGardes(n);
       // Repos de garde : retirer un éventuel CS/BO du nouveau médecin de garde le jour même et le lendemain
-      const rc=retirerConflitsGarde(csbo,n,[ech.dateKey,ech.leurDateKey].filter(Boolean));
+      const rc=retirerConflitsGarde(csbo,n,[ech.dateKey,ech.leurDateKey].filter(Boolean),false);
       if(rc.nb>0)setCsbo(rc.csbo);
     } else {
       const n={...csbo};
@@ -2534,7 +2533,7 @@ function getBesoinDefaut(key, annee) {
     garde: 1,
     cs1: estSemaine ? 1 : 0,
     bo1: estSemaine ? 1 : 0,
-    bo2: estSemaine ? 1 : 0,
+    bo2: estSemaine && js !== 5 ? 1 : 0,   // pas de BO2 le vendredi
     cs2: 0,
     bo3: 0,
     bom: estSemaine && js === 5 ? 1 : 0,   // BO matin le vendredi
@@ -2610,7 +2609,13 @@ function VueBesoins({ besoins, setBesoins, annee, isAdmin }) {
   };
 
   // Compter les overrides du mois
-  const nbOverrides = cal.filter(k => k && besoins[k] && Object.keys(besoins[k]).length > 0).length;
+  // Un jour est « modifié » s'il a un commentaire ou un poste différent du défaut
+  const estModifie = key => {
+    const o = besoins[key]; if (!o) return false;
+    const d = getBesoinDefaut(key, annee);
+    return Object.entries(o).some(([k, v]) => k === 'commentaire' ? !!v : v !== d[k]);
+  };
+  const nbOverrides = cal.filter(k => k && estModifie(k)).length;
 
   return (
     <div>
@@ -2619,7 +2624,7 @@ function VueBesoins({ besoins, setBesoins, annee, isAdmin }) {
         <div style={{ fontSize: 12, fontWeight: 700, color: T.textPrimary, marginBottom: 10 }}>Postes par défaut</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
           {POSTES.map(p => {
-            const defaut = p.id === 'garde' ? "Tous les jours" : ['cs1','bo1','bo2'].includes(p.id) ? "Lun–Ven (hors férié)" : p.id === 'bocs' ? "Mardi (hors férié)" : p.id === 'bom' ? "Vendredi (hors férié)" : "Aucun (exceptionnel)";
+            const defaut = p.id === 'garde' ? "Tous les jours" : ['cs1','bo1'].includes(p.id) ? "Lun–Ven (hors férié)" : p.id === 'bo2' ? "Lun–Jeu (hors férié)" : p.id === 'bocs' ? "Mardi (hors férié)" : p.id === 'bom' ? "Vendredi (hors férié)" : "Aucun (exceptionnel)";
             return (
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div style={{ width: 10, height: 10, borderRadius: 3, background: p.color, flexShrink: 0 }} />
@@ -2641,7 +2646,7 @@ function VueBesoins({ besoins, setBesoins, annee, isAdmin }) {
         {MOIS.map((m, i) => {
           const active = mois === i;
           const pfx = annee + "-" + String(i+1).padStart(2, "0");
-          const aOverride = Object.keys(besoins).some(k => k.startsWith(pfx));
+          const aOverride = Object.keys(besoins).some(k => k.startsWith(pfx) && estModifie(k));
           return (
             <button key={i} onClick={() => { setMois(i); setJourSel(null); setEditComment(false); }}
               style={{ padding: "4px 8px", borderRadius: 7, border: "1px solid " + (active ? T.amber : T.border), background: active ? "rgba(245,158,11,0.1)" : "transparent", color: active ? T.amber : aOverride ? T.textSecondary : T.textMuted, fontWeight: active ? 700 : aOverride ? 600 : 400, cursor: "pointer", fontSize: 10 }} onClick={() => { setMois(i); setJourSel(null); setEditComment(false); }}>
@@ -2672,7 +2677,7 @@ function VueBesoins({ besoins, setBesoins, annee, isAdmin }) {
             const estWE = [0,6].includes(js);
             const estF = feries.has(key);
             const b = getBesoinEffectif(key, besoins, annee);
-            const hasOverride = besoins[key] && Object.keys(besoins[key]).length > 0;
+            const hasOverride = estModifie(key);
             const isSel = jourSel === key;
 
             return (
@@ -2702,7 +2707,7 @@ function VueBesoins({ besoins, setBesoins, annee, isAdmin }) {
       {jourSel && (() => {
         const date = dkToDate(jourSel);
         const b = getBesoinEffectif(jourSel, besoins, annee);
-        const hasOverride = besoins[jourSel] && Object.keys(besoins[jourSel]).length > 0;
+        const hasOverride = estModifie(jourSel);
         return (
           <Card style={{ marginBottom: 16, borderColor: T.amber + "44" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
@@ -2720,7 +2725,7 @@ function VueBesoins({ besoins, setBesoins, annee, isAdmin }) {
               {POSTES.map(p => {
                 const actif = b[p.id] === 1;
                 const defaut = getBesoinDefaut(jourSel, annee)[p.id];
-                const modifie = besoins[jourSel]?.[p.id] !== undefined;
+                const modifie = besoins[jourSel]?.[p.id] !== undefined && besoins[jourSel][p.id] !== defaut;
                 return (
                   <button key={p.id} onClick={() => isAdmin && togglePoste(jourSel, p.id)}
                     style={{ padding: "10px 8px", borderRadius: 10, border: "1.5px solid " + (actif ? p.color : T.border), background: actif ? p.color + "18" : "transparent", cursor: isAdmin ? "pointer" : "default", transition: "all 0.15s", position: "relative" }}>
