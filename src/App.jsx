@@ -501,9 +501,11 @@ function typePosteCSBO(v, medId) {
   return s ? SLOT_INFO[s].type : null;
 }
 
-// Objectif d'activité : 18,5 unités par mois pour un temps plein (70 % ≈ 13, 50 % ≈ 9,3).
+// Objectif d'activité : 32 unités par 7 semaines de calendrier (vacances comprises) pour un temps plein
+// (70 % = 22,4 ; 50 % = 16), soit ≈ 4,57 unités/semaine ≈ 238 unités/an.
 // Chacun doit atteindre son objectif ; le surplus d'activité est partagé à parts égales.
-const UNITES_MOIS_100 = 18.5;
+const UNITES_7SEM_100 = 32;
+const UNITES_MOIS_100 = UNITES_7SEM_100 / 49 * (365.25 / 12); // ≈ 19,9 unités par mois
 const fmtU = x => (x + 1e-9).toFixed(1).replace(/\.0$/, "").replace(".", ",");
 
 // Nombre de mois couverts par les périodes d'une année (au prorata des jours)
@@ -2895,7 +2897,7 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[]}){
 
       {/* Objectif */}
       <div style={{background:"rgba(14,165,233,0.05)",border:"1px solid rgba(14,165,233,0.2)",borderRadius:12,padding:"10px 14px",marginBottom:12,fontSize:12,color:T.textSecondary,lineHeight:1.6}}>
-        <strong style={{color:T.textPrimary}}>Objectif :</strong> {String(UNITES_MOIS_100).replace(".",",")} unités/mois pour un 100 % · 70 % = {fmtU(UNITES_MOIS_100*0.7)} · 50 % = {fmtU(UNITES_MOIS_100*0.5)}<br/>
+        <strong style={{color:T.textPrimary}}>Objectif :</strong> {UNITES_7SEM_100} unités / 7 semaines pour un 100 % · 70 % = {fmtU(UNITES_7SEM_100*0.7)} · 50 % = {fmtU(UNITES_7SEM_100*0.5)} (vacances comprises)<br/>
         Période planifiée : <strong style={{color:T.textPrimary}}>{nbMois.toFixed(1).replace(".",",")} mois</strong> · Écart = unités faites − objectif · Réel = % de temps réellement fait<br/>
         Surplus de l'équipe : <strong style={{color:T.textPrimary}}>{surplusTotal>0?"+":""}{fmtU(surplusTotal)}</strong> unités · part égale : <strong style={{color:T.textPrimary}}>{partSurplus>0?"+":""}{fmtU(partSurplus)}</strong> par personne
       </div>
