@@ -517,6 +517,25 @@ function moisCouverts(periodes, annee) {
   return set.size / (tousJours(annee).length / 12);
 }
 
+// Lendemain d'une date "AAAA-MM-JJ"
+function lendemain(key){ const d=dkToDate(key); return dk(new Date(d.getFullYear(),d.getMonth(),d.getDate()+1)); }
+
+// Retire les CS/BO incompatibles avec les gardes : le jour de la garde, et le lendemain (repos de garde)
+// pour le médecin qui a réellement fait la garde. Renvoie {csbo, nb}.
+function retirerConflitsGarde(csbo, gardes, keys){
+  const nc={...csbo}; let nb=0;
+  const retirer=(k,id)=>{ if(!id||!nc[k])return; const v={...nc[k]}; let modif=false;
+    SLOTS_CSBO.forEach(sl=>{ if(v[sl]===id){ delete v[sl]; modif=true; nb++; } });
+    if(modif) nc[k]=v; };
+  for(const key of keys){
+    const g=gardes[key]; if(!g) continue;
+    const ponctuel=String(g).startsWith("PONCTUEL:");
+    retirer(key, ponctuel?g.split(":")[1]:g);       // même jour
+    if(!ponctuel) retirer(lendemain(key), g);         // repos de garde
+  }
+  return {csbo:nc, nb};
+}
+
 // Cible d'unités : objectif personnel + part égale du surplus (ou du manque) de l'équipe
 function cibleUnites(m, totalU, medecins, nbMois) {
   const objectifs = medecins.reduce((s, x) => s + UNITES_MOIS_100 * x.etp * nbMois, 0);
@@ -545,11 +564,9 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
   const ja = tousJours(annee);
   const jours = ja.filter(j => j.key >= debutKey && j.key <= finKey && ![0,6].includes(j.js));
 
-  // Cloner csbo existant (gardes manuelles conservées)
+  // On repart de zéro sur la période : les anciens CS/BO ne sont pas conservés
+  // (sinon un BO posé avant un changement de garde resterait, même le lendemain d'une garde)
   const result = {};
-  for (const [k, v] of Object.entries(csbo)) {
-    if (k >= debutKey && k <= finKey) result[k] = {...v};
-  }
 
   // Stats par médecin
   const st = medecins.map(m => ({
@@ -1170,6 +1187,7 @@ function appliquerPosteCase(gardes, csbo, key, medId, choix){
   if(slot) v[slot]=medId;
   if(v._manque){ v._manque=v._manque.filter(x=>x!==slot); if(!v._manque.length) delete v._manque; }
   if(Object.keys(v).length===0) delete nc[key]; else nc[key]=v;
+  if(choix==="garde") return {gardes:ng, csbo:retirerConflitsGarde(nc, ng, [key]).csbo};
   return {gardes:ng, csbo:nc};
 }
 // Slot utilisé pour un choix : le premier libre, sinon le dernier (dont le titulaire sera remplacé)
@@ -1202,6 +1220,9 @@ function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,an
   const indispo=indispos.find(i=>i.medecinId===medecin.id&&dateKey>=i.dateDebut&&dateKey<=i.dateFin);
   const periodeValidee=periodes.some(p=>p.annee===annee&&p.validee&&dateKey>=p.debut&&dateKey<=p.fin);
   const gardeDe=k=>{const x=gardes[k];return x?(String(x).startsWith("PONCTUEL:")?x.split(":")[1]:x):null;};
+  // Repos de garde : interdit de faire un CS/BO le lendemain d'une garde (si la garde n'a pas été remplacée)
+  const reposDeGarde=gardes[decal(-1)]===medecin.id;
+  const interditRepos=id=>reposDeGarde&&["cs","bo","bom","bocs"].includes(id);
 
   // Messages pour le choix en cours
   const infos=[], alertes=[];
@@ -1218,8 +1239,8 @@ function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,an
       if(gardeDe(decal(-1))===medecin.id) alertes.push("Déjà de garde la veille");
       if(gardeDe(decal(1))===medecin.id) alertes.push("Déjà de garde le lendemain");
       const v=gardeViolee(medecin.id,dateKey,contraintes,gardes); if(v) alertes.push(v);
+      if(slotDuMedecin(csbo[decal(1)]||{},medecin.id)) infos.push("Son CS/BO du lendemain sera retiré (repos de garde)");
     } else {
-      if(gardeDe(decal(-1))===medecin.id) alertes.push("Repos de garde (garde la veille)");
       if([0,6].includes(js)||ferie) infos.push("Week-end ou férié");
     }
   }
@@ -1235,16 +1256,20 @@ function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,an
         </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
           {CHOIX_CASE.map(c=>{
-            const sel=choix===c.id;
+            const sel=choix===c.id, bloque=interditRepos(c.id);
             return (
-              <button key={c.id} onClick={()=>setChoix(c.id)}
-                style={{padding:"12px 6px",borderRadius:10,border:"2px solid "+(sel?c.color:T.border),background:sel?c.bg:"#f8faff",cursor:"pointer",position:"relative"}}>
+              <button key={c.id} onClick={()=>!bloque&&setChoix(c.id)} disabled={bloque}
+                style={{padding:"12px 6px",borderRadius:10,border:"2px solid "+(sel?c.color:T.border),background:bloque?"#f3f4f6":sel?c.bg:"#f8faff",cursor:bloque?"not-allowed":"pointer",position:"relative",opacity:bloque?0.5:1}}>
                 <div style={{fontSize:13,fontWeight:800,color:sel?c.color:T.textPrimary}}>{c.label}</div>
                 {actuel===c.id&&<div style={{fontSize:9,color:T.textMuted,marginTop:2}}>actuel</div>}
+                {bloque&&actuel!==c.id&&<div style={{fontSize:9,color:T.textMuted,marginTop:2}}>repos de garde</div>}
               </button>
             );
           })}
         </div>
+        {reposDeGarde&&interditRepos(actuel)&&(
+          <div style={{fontSize:12,color:"#b91c1c",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,padding:"6px 10px",marginBottom:8}}>⛔ De garde la veille : ce poste est interdit, choisis « Libre » ou « Garde »</div>
+        )}
         {(infos.length>0||alertes.length>0)&&(
           <div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:12}}>
             {alertes.map((a,i)=><div key={"a"+i} style={{fontSize:12,color:"#b45309",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"6px 10px"}}>⚠️ {a}</div>)}
@@ -1258,7 +1283,7 @@ function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,an
         )}
         <div style={{display:"flex",gap:8}}>
           <div style={{flex:1}}><Btn onClick={onClose} variant="ghost" full>Annuler</Btn></div>
-          <div style={{flex:1}}><Btn onClick={()=>onApply(choix)} disabled={choix===actuel} full>Enregistrer</Btn></div>
+          <div style={{flex:1}}><Btn onClick={()=>onApply(choix)} disabled={choix===actuel||interditRepos(choix)} full>Enregistrer</Btn></div>
         </div>
       </div>
     </div>
@@ -1301,20 +1326,9 @@ function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,csbo,setCsbo,bes
         // Supprimer seulement les gardes titulaires, garder les remplaçants
         while(d<=f){const key=dk(d);if(!gardesRemp[key])delete n[key];d.setDate(d.getDate()+1);}
         Object.assign(n,res.gardes);setGardes(n);setStats(res.stats);
-        // La garde est prioritaire : retirer tout CS/BO d'un médecin les jours où il est de garde
-        const ncsbo={...csbo};let nbConflits=0;
-        const dC=dkToDate(p.debut),fC=dkToDate(p.fin);
-        while(dC<=fC){
-          const key=dk(dC);
-          const g=n[key];
-          const gid=g?(g.startsWith("PONCTUEL:")?g.split(":")[1]:g):null;
-          if(gid&&ncsbo[key]){
-            const v={...ncsbo[key]};let modif=false;
-            SLOTS_CSBO.forEach(s=>{if(v[s]===gid){delete v[s];modif=true;nbConflits++;}});
-            if(modif)ncsbo[key]=v;
-          }
-          dC.setDate(dC.getDate()+1);
-        }
+        // La garde est prioritaire : retirer les CS/BO du médecin de garde le jour même et le lendemain
+        const keysP=[];{const dC=dkToDate(p.debut),fC=dkToDate(p.fin);while(dC<=fC){keysP.push(dk(dC));dC.setDate(dC.getDate()+1);}}
+        const rc=retirerConflitsGarde(csbo,n,keysP);const ncsbo=rc.csbo,nbConflits=rc.nb;
         if(nbConflits>0)setCsbo(ncsbo);
         if(res.gardesManquantes&&res.gardesManquantes.length>0){
           setJoursManquants(prev=>({...prev,[p.id+"_gardes"]:res.gardesManquantes}));
@@ -1550,14 +1564,9 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
         n[dateKey]="PONCTUEL:"+(tid||"inconnu")+":"+nomRemp;
       }
     } else{n[dateKey]=medecinId;}
-    // La garde est prioritaire : retirer tout CS/BO du même médecin ce jour-là
-    const gg=n[dateKey];
-    const gid=gg?(gg.startsWith("PONCTUEL:")?gg.split(":")[1]:gg):null;
-    if(gid&&csbo[dateKey]){
-      const v={...csbo[dateKey]};let modif=false;
-      SLOTS_CSBO.forEach(s=>{if(v[s]===gid){delete v[s];modif=true;}});
-      if(modif)setCsbo({...csbo,[dateKey]:v});
-    }
+    // La garde est prioritaire : retirer les CS/BO du médecin de garde le jour même et le lendemain
+    const rc=retirerConflitsGarde(csbo,n,[dateKey]);
+    if(rc.nb>0)setCsbo(rc.csbo);
     setGardes(n);setModalDate(null);showToast("Garde mise à jour ✓");
   };
 
@@ -1714,7 +1723,9 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
                       const violation=!isGardePonctuel&&isGarde?gardeViolee(m.id,j.key,contraintes,gardes):null;
                       if(isGarde) cells.push({color:violation?"#f59e0b":"#f03e3e",label:isGardePonctuel?"🔄 "+(getRemplacement(j.key).remplacantNom.length>7?getRemplacement(j.key).remplacantNom.slice(0,7)+"…":getRemplacement(j.key).remplacantNom):"G",bg:violation?"#fffbeb":"#fff0f0",border:violation?"#fde68a":"#fca5a5",ponctuel:isGardePonctuel,violation});
                       if(isBosRemp) cells.push({color:"#4f6ef7",label:"BO",bg:"#eff2ff",border:"#a5b4fc"});
-                      if(tpJ) cells.push({...POSTE_AFFICHAGE[tpJ]});
+                      const veilleK=dk(new Date(date.getFullYear(),date.getMonth(),date.getDate()-1));
+                      const enRepos=tpJ&&gardes[veilleK]===m.id;
+                      if(tpJ) cells.push(enRepos?{...POSTE_AFFICHAGE[tpJ],color:"#b91c1c",bg:"#fef2f2",border:"#f87171",violation:"Interdit : garde la veille"}:{...POSTE_AFFICHAGE[tpJ]});
 
                       // Poste manquant pour ce jour (pas spécifique à un médecin — affiché dans 1ère colonne vide)
                       const manqueJ=csboJ._manque||[];
@@ -2180,6 +2191,9 @@ function VueEchanges({echanges,setEchanges,gardes,setGardes,csbo,setCsbo,bos,set
         if(n[ech.leurDateKey]===ech.cibleId) n[ech.leurDateKey]=ech.demandeurId;
       }
       setGardes(n);
+      // Repos de garde : retirer un éventuel CS/BO du nouveau médecin de garde le jour même et le lendemain
+      const rc=retirerConflitsGarde(csbo,n,[ech.dateKey,ech.leurDateKey].filter(Boolean));
+      if(rc.nb>0)setCsbo(rc.csbo);
     } else {
       const n={...csbo};
       const v={...(n[ech.dateKey]||{})};
