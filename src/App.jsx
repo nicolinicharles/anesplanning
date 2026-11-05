@@ -414,6 +414,35 @@ function genererGardes(medecins,indispos,contraintes,debutKey,finKey,annee,garde
   return{gardes,stats,gardesManquantes};
 }
 
+// ── POSTES CS / BO ────────────────────────────────────────────────────────────
+// u = unités comptées pour l'équité ; cs / bo = part comptée dans les totaux CS et BO
+const SLOT_INFO = {
+  cs1:  { type:"cs",   u:1,   cs:1,   bo:0   },
+  cs2:  { type:"cs",   u:1,   cs:1,   bo:0   },
+  bo1:  { type:"bo",   u:1,   cs:0,   bo:1   },
+  bo2:  { type:"bo",   u:1,   cs:0,   bo:1   },
+  bo3:  { type:"bo",   u:1,   cs:0,   bo:1   },
+  bom:  { type:"bom",  u:0.5, cs:0,   bo:0.5 },  // BO matin (demi-journée)
+  bocs: { type:"bocs", u:1,   cs:0.5, bo:0.5 },  // BO + consultation
+};
+const SLOTS_CSBO = Object.keys(SLOT_INFO);
+const POSTE_AFFICHAGE = {
+  cs:   { label:"CS",    color:"#00b86b", bg:"#f0fdf6", border:"#6ee7b7" },
+  bo:   { label:"BO",    color:"#4f6ef7", bg:"#eff2ff", border:"#a5b4fc" },
+  bom:  { label:"BO ½",  color:"#0891b2", bg:"#ecfeff", border:"#67e8f9" },
+  bocs: { label:"BO/CS", color:"#7c3aed", bg:"#f5f3ff", border:"#c4b5fd" },
+};
+// Slot occupé par un médecin un jour donné (ou null)
+function slotDuMedecin(v, medId) {
+  if (!v || !medId) return null;
+  return SLOTS_CSBO.find(s => v[s] === medId) || null;
+}
+// Type de poste ("cs" | "bo" | "bom" | "bocs") ou null
+function typePosteCSBO(v, medId) {
+  const s = slotDuMedecin(v, medId);
+  return s ? SLOT_INFO[s].type : null;
+}
+
 // ── ALGORITHME CS / BO (V18) ──────────────────────────────────────────────────
 
 function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins, debutKey, finKey, annee) {
@@ -428,8 +457,15 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
 
   // Stats par médecin
   const st = medecins.map(m => ({
-    ...m, u: 0, cs: 0, bo: 0, cibleCS: 0, cibleBO: 0, cible: 0
+    ...m, u: 0, cs: 0, bo: 0, bom: 0, cibleCS: 0, cibleBO: 0, cible: 0
   }));
+
+  // BO matin déjà attribués sur l'année hors période (équité stricte, sans tenir compte des %)
+  for (const [k, v] of Object.entries(csbo)) {
+    if (k >= debutKey && k <= finKey) continue;
+    if (!k.startsWith(String(annee))) continue;
+    if (v && v.bom) { const m = st.find(x => x.id === v.bom); if (m) m.bom += 1; }
+  }
 
   // Calculer unités déjà acquises via gardes
   for (const j of ja) {
@@ -442,8 +478,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
 
   // Compter CS/BO déjà fixés manuellement
   for (const [key, v] of Object.entries(result)) {
-    ['cs1','cs2'].forEach(p => { if (v[p]) { const m = st.find(x => x.id === v[p]); if (m) { m.u += 1; m.cs += 1; } } });
-    ['bo1','bo2','bo3'].forEach(p => { if (v[p]) { const m = st.find(x => x.id === v[p]); if (m) { m.u += 1; m.bo += 1; } } });
+    SLOTS_CSBO.forEach(p => { if (v[p]) { const m = st.find(x => x.id === v[p]); if (m) { const i = SLOT_INFO[p]; m.u += i.u; m.cs += i.cs; m.bo += i.bo; if (p === 'bom') m.bom += 1; } } });
   }
 
   // Besoin par défaut selon le jour
@@ -456,6 +491,8 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
       bo1: override.bo1 !== undefined ? override.bo1 : (estSemaine ? 1 : 0),
       bo2: override.bo2 !== undefined ? override.bo2 : (estSemaine ? 1 : 0),
       bo3: override.bo3 !== undefined ? override.bo3 : 0,
+      bom: override.bom !== undefined ? override.bom : (estSemaine && js === 5 ? 1 : 0),   // vendredi
+      bocs: override.bocs !== undefined ? override.bocs : (estSemaine && js === 2 ? 1 : 0), // mardi
     };
   }
 
@@ -475,11 +512,16 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
     const rempBO = bos[j.key] ? 1 : 0;
     const slotsBORestants = slotsBO.slice(rempBO);
     for (const slot of slotsBORestants) postesBO.push({ key: j.key, slot, ferie: j.ferie });
+    // BO matin et BO/Cs : jamais remplacés par le remplaçant journée
+    if (b.bom && !fixe.bom) postesBO.push({ key: j.key, slot: 'bom', ferie: j.ferie });
+    if (b.bocs && !fixe.bocs) postesBO.push({ key: j.key, slot: 'bocs', ferie: j.ferie });
   }
 
-  const totalCS = postesCS.length, totalBO = postesBO.length;
+  const tousPostes = [...postesCS, ...postesBO];
+  const totalCS = tousPostes.reduce((s, p) => s + SLOT_INFO[p.slot].cs, 0);
+  const totalBO = tousPostes.reduce((s, p) => s + SLOT_INFO[p.slot].bo, 0);
   const totalEtp = medecins.reduce((s, m) => s + m.etp, 0);
-  const totalU = st.reduce((s, m) => s + m.u, 0) + totalCS + totalBO;
+  const totalU = st.reduce((s, m) => s + m.u, 0) + tousPostes.reduce((s, p) => s + SLOT_INFO[p.slot].u, 0);
 
   st.forEach(m => {
     m.cible = totalEtp > 0 ? totalU * m.etp / totalEtp : 0;
@@ -498,7 +540,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
     if (gr2 === m.id) return false;
     // Pas de CS/BO si déjà un CS/BO ce jour dans result
     const deja=result2[key]||{};
-    if(deja.cs1===m.id||deja.cs2===m.id||deja.bo1===m.id||deja.bo2===m.id||deja.bo3===m.id) return false;
+    if(slotDuMedecin(deja,m.id)) return false;
     // Pas de CS/BO le lendemain d'une garde
     const d = dkToDate(key);
     const veille = dk(new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1));
@@ -517,7 +559,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
         const ks = dk(new Date(debutSem.getFullYear(), debutSem.getMonth(), debutSem.getDate() + i));
         if (ks === key) continue;
         const vs = result2[ks] || {};
-        if (vs.cs1 === m.id || vs.cs2 === m.id || vs.bo1 === m.id || vs.bo2 === m.id || vs.bo3 === m.id) nbSem++;
+        if (slotDuMedecin(vs, m.id)) nbSem++;
       }
       if (nbSem >= 2) return false; // Max 2 CS/BO la semaine du pack ven+dim
     }
@@ -531,7 +573,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
         const ks = dk(new Date(debutSem.getFullYear(), debutSem.getMonth(), debutSem.getDate() + i));
         if (ks === key) continue;
         const vs = result2[ks] || {};
-        if (vs.cs1 === m.id || vs.cs2 === m.id || vs.bo1 === m.id || vs.bo2 === m.id || vs.bo3 === m.id) nbSemPrec++;
+        if (slotDuMedecin(vs, m.id)) nbSemPrec++;
       }
       if (nbSemPrec >= 2) return false;
     }
@@ -540,7 +582,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
 
   function dejaAffecteJour(m, key, res) {
     const v = res[key] || {};
-    return ['cs1','cs2','bo1','bo2','bo3'].some(p => v[p] === m.id);
+    return !!slotDuMedecin(v, m.id);
   }
 
   function scoreCS(m) {
@@ -587,18 +629,22 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
       const c = cands[0];
       if (!resLocal[poste.key]) resLocal[poste.key] = {};
       resLocal[poste.key][poste.slot] = c.id;
-      c.u += 1; c.cs += 1;
+      { const i = SLOT_INFO[poste.slot]; c.u += i.u; c.cs += i.cs; c.bo += i.bo; }
     }
 
-    // 2) BO ensuite
-    for (const poste of sortByConstraint(shuffle(postesBO.slice()))) {
+    // 2) BO ensuite — les BO matin d'abord, répartis à parts égales (sans tenir compte des %)
+    const postesBOM = postesBO.filter(p => p.slot === 'bom');
+    const postesBOAutres = postesBO.filter(p => p.slot !== 'bom');
+    const ordreBO = [...sortByConstraint(shuffle(postesBOM.slice())), ...sortByConstraint(shuffle(postesBOAutres.slice()))];
+    for (const poste of ordreBO) {
       const cands = stLocal.filter(m => peutFaire(m, poste.key, resLocal) && !dejaAffecteJour(m, poste.key, resLocal));
       if (cands.length === 0) { nonRemplis++; continue; }
-      cands.sort((a, b) => scoreBO(b) - scoreBO(a));
+      if (poste.slot === 'bom') cands.sort((a, b) => (a.bom - b.bom) || (scoreBO(b) - scoreBO(a)));
+      else cands.sort((a, b) => scoreBO(b) - scoreBO(a));
       const c = cands[0];
       if (!resLocal[poste.key]) resLocal[poste.key] = {};
       resLocal[poste.key][poste.slot] = c.id;
-      c.u += 1; c.bo += 1;
+      { const i = SLOT_INFO[poste.slot]; c.u += i.u; c.cs += i.cs; c.bo += i.bo; if (poste.slot === 'bom') c.bom += 1; }
     }
 
     // 3) Optimisation CS
@@ -610,10 +656,11 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
       for (const poste of postesCS) {
         const v = resLocal[poste.key]||{};
         if (v[poste.slot] !== trop.id) continue;
-        delete v[poste.slot]; trop.cs--; trop.u--;
+        const i = SLOT_INFO[poste.slot];
+        delete v[poste.slot]; trop.cs -= i.cs; trop.bo -= i.bo; trop.u -= i.u;
         if (peutFaire(manque, poste.key, resLocal) && !dejaAffecteJour(manque, poste.key, resLocal)) {
-          v[poste.slot] = manque.id; manque.cs++; manque.u++; fait = true; break;
-        } else { v[poste.slot] = trop.id; trop.cs++; trop.u++; }
+          v[poste.slot] = manque.id; manque.cs += i.cs; manque.bo += i.bo; manque.u += i.u; fait = true; break;
+        } else { v[poste.slot] = trop.id; trop.cs += i.cs; trop.bo += i.bo; trop.u += i.u; }
       }
       if (!fait) break;
     }
@@ -625,19 +672,42 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
       if (!trop||!manque||(trop.u-trop.cible)<0.8||(manque.cible-manque.u)<0.8) break;
       let fait = false;
       for (const poste of postesBO) {
+        if (poste.slot === 'bom') continue; // BO matin équilibrés séparément (étape 5)
         const v = resLocal[poste.key]||{};
         if (v[poste.slot] !== trop.id) continue;
-        delete v[poste.slot]; trop.bo--; trop.u--;
+        const i = SLOT_INFO[poste.slot];
+        delete v[poste.slot]; trop.cs -= i.cs; trop.bo -= i.bo; trop.u -= i.u;
         if (peutFaire(manque, poste.key, resLocal) && !dejaAffecteJour(manque, poste.key, resLocal)) {
-          v[poste.slot] = manque.id; manque.bo++; manque.u++; fait = true; break;
-        } else { v[poste.slot] = trop.id; trop.bo++; trop.u++; }
+          v[poste.slot] = manque.id; manque.cs += i.cs; manque.bo += i.bo; manque.u += i.u; fait = true; break;
+        } else { v[poste.slot] = trop.id; trop.cs += i.cs; trop.bo += i.bo; trop.u += i.u; }
       }
       if (!fait) break;
     }
 
+    // 5) Équilibrage BO matin : même nombre pour tout le monde (écart max 1)
+    for (let tour = 0; tour < 200; tour++) {
+      const trop = stLocal.slice().sort((a,b) => b.bom - a.bom)[0];
+      const manque = stLocal.slice().sort((a,b) => a.bom - b.bom)[0];
+      if (!trop || !manque || trop.bom - manque.bom <= 1) break;
+      let fait = false;
+      for (const poste of postesBOM) {
+        const v = resLocal[poste.key]||{};
+        if (v.bom !== trop.id) continue;
+        delete v.bom;
+        if (peutFaire(manque, poste.key, resLocal) && !dejaAffecteJour(manque, poste.key, resLocal)) {
+          v.bom = manque.id;
+          trop.bom--; trop.u -= 0.5; trop.bo -= 0.5;
+          manque.bom++; manque.u += 0.5; manque.bo += 0.5;
+          fait = true; break;
+        } else { v.bom = trop.id; }
+      }
+      if (!fait) break;
+    }
+
+    const moyBOM = stLocal.reduce((s,m) => s + m.bom, 0) / Math.max(1, stLocal.length);
     const score = stLocal.reduce((s,m) => {
-      const eu=m.u-m.cible, ecs=m.cs-m.cibleCS, ebo=m.bo-m.cibleBO;
-      return s + eu*eu*25 + ecs*ecs*220 + ebo*ebo*5;
+      const eu=m.u-m.cible, ecs=m.cs-m.cibleCS, ebo=m.bo-m.cibleBO, ebom=m.bom-moyBOM;
+      return s + eu*eu*25 + ecs*ecs*220 + ebo*ebo*5 + ebom*ebom*3000;
     }, 0) + nonRemplis * 1000000;
 
     if (score < meilleurScore) {
@@ -666,8 +736,8 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
       const g = gardes[j.key];
       if (g === m.id) u += poids(j.key, j.ferie);
       const v = (meilleurResult||{})[j.key] || {};
-      if (v.cs1===m.id||v.cs2===m.id) { u+=1; cs++; }
-      if (v.bo1===m.id||v.bo2===m.id||v.bo3===m.id) { u+=1; bo++; }
+      const sl = slotDuMedecin(v, m.id);
+      if (sl) { const i = SLOT_INFO[sl]; u += i.u; cs += i.cs; bo += i.bo; }
     }
     const s = st.find(x=>x.id===m.id);
     return { ...m, unites:u, gardes:s?.g||0, vendDim:s?.vd||0, samedi:s?.sa||0, semaine:s?.sem||0, cs, bo };
@@ -1012,7 +1082,7 @@ function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,csbo,setCsbo,bes
           const gid=g?(g.startsWith("PONCTUEL:")?g.split(":")[1]:g):null;
           if(gid&&ncsbo[key]){
             const v={...ncsbo[key]};let modif=false;
-            ["cs1","cs2","bo1","bo2","bo3"].forEach(s=>{if(v[s]===gid){delete v[s];modif=true;nbConflits++;}});
+            SLOTS_CSBO.forEach(s=>{if(v[s]===gid){delete v[s];modif=true;nbConflits++;}});
             if(modif)ncsbo[key]=v;
           }
           dC.setDate(dC.getDate()+1);
@@ -1233,7 +1303,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
     const gid=gg?(gg.startsWith("PONCTUEL:")?gg.split(":")[1]:gg):null;
     if(gid&&csbo[dateKey]){
       const v={...csbo[dateKey]};let modif=false;
-      ["cs1","cs2","bo1","bo2","bo3"].forEach(s=>{if(v[s]===gid){delete v[s];modif=true;}});
+      SLOTS_CSBO.forEach(s=>{if(v[s]===gid){delete v[s];modif=true;}});
       if(modif)setCsbo({...csbo,[dateKey]:v});
     }
     setGardes(n);setModalDate(null);showToast("Garde mise à jour ✓");
@@ -1282,12 +1352,11 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
                 const remp2=gardeId2&&gardeId2.startsWith("PONCTUEL:")?{titulaireId:gardeId2.split(":")[1]}:null;
                 const gardeReel2=remp2?remp2.titulaireId:gardeId2;
                 const isG=gardeReel2===m.id;
-                const isCS=csboJ2.cs1===m.id||csboJ2.cs2===m.id;
-                const isBO=csboJ2.bo1===m.id||csboJ2.bo2===m.id||csboJ2.bo3===m.id;
+                const tp2=typePosteCSBO(csboJ2,m.id);
+                const aff2=tp2?POSTE_AFFICHAGE[tp2]:null;
                 let content="";
                 if(isG) content=`<span style="background:#fff0f0;color:#f03e3e;border:1px solid #fca5a5;border-radius:3px;padding:1px 5px;font-weight:800;font-size:9px">G</span>`;
-                else if(isCS) content=`<span style="background:#f0fdf6;color:#00b86b;border:1px solid #6ee7b7;border-radius:3px;padding:1px 4px;font-weight:800;font-size:9px">CS</span>`;
-                else if(isBO) content=`<span style="background:#eff2ff;color:#4f6ef7;border:1px solid #a5b4fc;border-radius:3px;padding:1px 4px;font-weight:800;font-size:9px">BO</span>`;
+                else if(aff2) content=`<span style="background:${aff2.bg};color:${aff2.color};border:1px solid ${aff2.border};border-radius:3px;padding:1px 4px;font-weight:800;font-size:9px;white-space:nowrap">${aff2.label}</span>`;
                 return `<td style="padding:2px;border:1px solid #e0e4f4;text-align:center;background:${bg}">${content}</td>`;
               }).join("");
               return `<tr>${dateCell}${cells}</tr>`;
@@ -1379,16 +1448,14 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
                       const isGarde=gardeReel===m.id;
                       const isGardePonctuel=remp&&remp.titulaireId===m.id;
                       const isBosRemp=bosId===m.id;
-                      const isCS=(csboJ.cs1===m.id||csboJ.cs2===m.id);
-                      const isBO=(csboJ.bo1===m.id||csboJ.bo2===m.id||csboJ.bo3===m.id);
+                      const tpJ=typePosteCSBO(csboJ,m.id);
                       const isIndispo=indisposJ.has(m.id);
 
                       const cells=[];
                       const violation=!isGardePonctuel&&isGarde?gardeViolee(m.id,j.key,contraintes,gardes):null;
                       if(isGarde) cells.push({color:violation?"#f59e0b":"#f03e3e",label:isGardePonctuel?"🔄 "+(getRemplacement(j.key).remplacantNom.length>7?getRemplacement(j.key).remplacantNom.slice(0,7)+"…":getRemplacement(j.key).remplacantNom):"G",bg:violation?"#fffbeb":"#fff0f0",border:violation?"#fde68a":"#fca5a5",ponctuel:isGardePonctuel,violation});
                       if(isBosRemp) cells.push({color:"#4f6ef7",label:"BO",bg:"#eff2ff",border:"#a5b4fc"});
-                      if(isCS) cells.push({color:"#00b86b",label:"CS",bg:"#f0fdf6",border:"#6ee7b7"});
-                      if(isBO) cells.push({color:"#4f6ef7",label:"BO",bg:"#eff2ff",border:"#a5b4fc"});
+                      if(tpJ) cells.push({...POSTE_AFFICHAGE[tpJ]});
 
                       // Poste manquant pour ce jour (pas spécifique à un médecin — affiché dans 1ère colonne vide)
                       const manqueJ=csboJ._manque||[];
@@ -1679,8 +1746,8 @@ function VueEchanges({echanges,setEchanges,gardes,setGardes,csbo,setCsbo,bos,set
     const remp=g&&g.startsWith("PONCTUEL:")?g.split(":")[1]:null;
     if(g===medId||(remp&&remp===medId)) return "garde";
     const v=csbo[key]||{};
-    if(v.cs1===medId||v.cs2===medId) return "cs";
-    if(v.bo1===medId||v.bo2===medId||v.bo3===medId) return "bo";
+    const tp=typePosteCSBO(v,medId);
+    if(tp) return tp;
     if(bos[key]===medId) return "bo";
     return "libre";
   };
@@ -1701,7 +1768,7 @@ function VueEchanges({echanges,setEchanges,gardes,setGardes,csbo,setCsbo,bos,set
   };
 
   const raisonIndispo=(medId, key)=>{
-    if(statutJour(medId,key)!=="libre") return statutJour(medId,key)==="garde"?"Garde ce jour":statutJour(medId,key)==="cs"?"CS ce jour":"BO ce jour";
+    if(statutJour(medId,key)!=="libre") return statutJour(medId,key)==="garde"?"Garde ce jour":(statutLabel[statutJour(medId,key)]||"Poste")+" ce jour";
     const d=dkToDate(key);
     const veille=dk(new Date(d.getFullYear(),d.getMonth(),d.getDate()-1));
     const gVeille=gardes[veille];
@@ -1710,9 +1777,9 @@ function VueEchanges({echanges,setEchanges,gardes,setGardes,csbo,setCsbo,bos,set
     return null;
   };
 
-  const statutLabel={garde:"Garde",cs:"CS",bo:"BO",libre:"Libre"};
-  const statutColor={garde:"#f03e3e",cs:"#00b86b",bo:"#4f6ef7",libre:"#9ca3af"};
-  const statutBg={garde:"#fff0f0",cs:"#f0fdf4",bo:"#eff2ff",libre:"transparent"};
+  const statutLabel={garde:"Garde",cs:"CS",bo:"BO",bom:"BO ½",bocs:"BO/CS",libre:"Libre"};
+  const statutColor={garde:"#f03e3e",cs:"#00b86b",bo:"#4f6ef7",bom:"#0891b2",bocs:"#7c3aed",libre:"#9ca3af"};
+  const statutBg={garde:"#fff0f0",cs:"#f0fdf4",bo:"#eff2ff",bom:"#ecfeff",bocs:"#f5f3ff",libre:"transparent"};
 
   // Mes affectations ce mois
   const joursDuMois=(mois)=>ja.filter(j=>dkToDate(j.key).getMonth()===mois);
@@ -1853,11 +1920,11 @@ function VueEchanges({echanges,setEchanges,gardes,setGardes,csbo,setCsbo,bos,set
     } else {
       const n={...csbo};
       const v={...(n[ech.dateKey]||{})};
-      ["cs1","cs2","bo1","bo2","bo3"].forEach(s=>{if(v[s]===ech.demandeurId)v[s]=ech.cibleId;});
+      SLOTS_CSBO.forEach(s=>{if(v[s]===ech.demandeurId)v[s]=ech.cibleId;});
       n[ech.dateKey]=v;
       if(ech.type==="echange"&&ech.leurDateKey){
         const v2={...(n[ech.leurDateKey]||{})};
-        ["cs1","cs2","bo1","bo2","bo3"].forEach(s=>{if(v2[s]===ech.cibleId)v2[s]=ech.demandeurId;});
+        SLOTS_CSBO.forEach(s=>{if(v2[s]===ech.cibleId)v2[s]=ech.demandeurId;});
         n[ech.leurDateKey]=v2;
       }
       setCsbo(n);
@@ -2142,6 +2209,8 @@ function getBesoinDefaut(key, annee) {
     bo2: estSemaine ? 1 : 0,
     cs2: 0,
     bo3: 0,
+    bom: estSemaine && js === 5 ? 1 : 0,   // BO matin le vendredi
+    bocs: estSemaine && js === 2 ? 1 : 0,  // BO/Cs le mardi
   };
 }
 
@@ -2155,6 +2224,8 @@ function getBesoinEffectif(key, besoins, annee) {
     bo1:   override.bo1   !== undefined ? override.bo1   : defaut.bo1,
     bo2:   override.bo2   !== undefined ? override.bo2   : defaut.bo2,
     bo3:   override.bo3   !== undefined ? override.bo3   : defaut.bo3,
+    bom:   override.bom   !== undefined ? override.bom   : defaut.bom,
+    bocs:  override.bocs  !== undefined ? override.bocs  : defaut.bocs,
   };
 }
 
@@ -2165,6 +2236,8 @@ const POSTES = [
   { id:'bo1',   label:'BO1',   color:'#0ea5e9',  desc:'Bloc op. 1' },
   { id:'bo2',   label:'BO2',   color:'#38bdf8',  desc:'Bloc op. 2' },
   { id:'bo3',   label:'BO3',   color:'#7dd3fc',  desc:'Bloc op. 3' },
+  { id:'bom',   label:'BO matin', color:'#0891b2', desc:'Bloc matin (½)' },
+  { id:'bocs',  label:'BO/Cs', color:'#7c3aed',  desc:'Bloc + consult.' },
 ];
 
 function VueBesoins({ besoins, setBesoins, annee, isAdmin }) {
@@ -2218,7 +2291,7 @@ function VueBesoins({ besoins, setBesoins, annee, isAdmin }) {
         <div style={{ fontSize: 12, fontWeight: 700, color: T.textPrimary, marginBottom: 10 }}>Postes par défaut</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
           {POSTES.map(p => {
-            const defaut = p.id === 'garde' ? "Tous les jours" : ['cs1','bo1','bo2'].includes(p.id) ? "Lun–Ven (hors férié)" : "Aucun (exceptionnel)";
+            const defaut = p.id === 'garde' ? "Tous les jours" : ['cs1','bo1','bo2'].includes(p.id) ? "Lun–Ven (hors férié)" : p.id === 'bocs' ? "Mardi (hors férié)" : p.id === 'bom' ? "Vendredi (hors férié)" : "Aucun (exceptionnel)";
             return (
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div style={{ width: 10, height: 10, borderRadius: 3, background: p.color, flexShrink: 0 }} />
@@ -2434,8 +2507,8 @@ function VueEquite({gardes,bos,csbo,annee}){
         }
         if(bos[j.key]===m.id){bo++;unites+=1;}
         const v=csbo[j.key]||{};
-        if(v.cs1===m.id||v.cs2===m.id){cs++;unites+=1;}
-        if(v.bo1===m.id||v.bo2===m.id||v.bo3===m.id){bo++;unites+=1;}
+        const sl=slotDuMedecin(v,m.id);
+        if(sl){const i=SLOT_INFO[sl];cs+=i.cs;bo+=i.bo;unites+=i.u;}
       }
       return{...m,gardes:gardeCount,semaine,vendDim,samedi,cs,bo,unites};
     });
@@ -2849,8 +2922,8 @@ function VueMonPlanning({gardes,bos,csbo,currentUser,annee}){
     if(gardeReel===currentUser.id) return "garde";
     if(bos&&bos[today]===currentUser.id) return "bo";
     const v=csbo[today]||{};
-    if(v.cs1===currentUser.id||v.cs2===currentUser.id) return "cs";
-    if(v.bo1===currentUser.id||v.bo2===currentUser.id||v.bo3===currentUser.id) return "bo";
+    const tpA=typePosteCSBO(v,currentUser.id);
+    if(tpA) return tpA;
     // Repos de garde = garde hier
     const hier=dk(new Date(new Date().getFullYear(),new Date().getMonth(),new Date().getDate()-1));
     const gHier=gardes[hier];
@@ -2874,6 +2947,22 @@ function VueMonPlanning({gardes,bos,csbo,currentUser,annee}){
       titre:"Vous êtes en consultation",
       message:"Une belle journée de consultations vous attend. Chaque patient compte sur votre expertise.",
       badge:"CS",
+      badgeBg:"rgba(255,255,255,0.2)",
+    },
+    bom:{
+      gradient:"linear-gradient(145deg,#0891b2,#0e7490)",
+      emoji:"⚕️",
+      titre:"Vous êtes au bloc ce matin",
+      message:"Une matinée au bloc opératoire vous attend, puis l'après-midi est à vous.",
+      badge:"BO MATIN",
+      badgeBg:"rgba(255,255,255,0.2)",
+    },
+    bocs:{
+      gradient:"linear-gradient(145deg,#7c3aed,#4f6ef7)",
+      emoji:"🩺",
+      titre:"Bloc et consultation",
+      message:"Une journée partagée entre le bloc opératoire et les consultations.",
+      badge:"BO / CS",
       badgeBg:"rgba(255,255,255,0.2)",
     },
     bo:{
@@ -2914,7 +3003,7 @@ function VueMonPlanning({gardes,bos,csbo,currentUser,annee}){
     if(gardeReel===currentUser.id) return true;
     if(bos&&bos[j.key]===currentUser.id) return true;
     const v=csbo[j.key]||{};
-    return v.cs1===currentUser.id||v.cs2===currentUser.id||v.bo1===currentUser.id||v.bo2===currentUser.id||v.bo3===currentUser.id;
+    return !!slotDuMedecin(v,currentUser.id);
   }).slice(0,5).map(j=>{
     const g=gardes[j.key];
     const gardeReel=g&&g.startsWith("PONCTUEL:")?g.split(":")[1]:g;
@@ -2922,8 +3011,8 @@ function VueMonPlanning({gardes,bos,csbo,currentUser,annee}){
     const postes=[];
     if(gardeReel===currentUser.id) postes.push({label:"Garde",color:"#f03e3e",bg:"#fff0f0",border:"#fca5a5"});
     if(bos&&bos[j.key]===currentUser.id) postes.push({label:"BO",color:"#4f6ef7",bg:"#eff2ff",border:"#a5b4fc"});
-    if(v.cs1===currentUser.id||v.cs2===currentUser.id) postes.push({label:"CS",color:"#00b86b",bg:"#f0fdf6",border:"#6ee7b7"});
-    if(v.bo1===currentUser.id||v.bo2===currentUser.id||v.bo3===currentUser.id) postes.push({label:"BO",color:"#4f6ef7",bg:"#eff2ff",border:"#a5b4fc"});
+    const tpP=typePosteCSBO(v,currentUser.id);
+    if(tpP) postes.push({...POSTE_AFFICHAGE[tpP]});
     const date=dkToDate(j.key);
     return {key:j.key,date,postes,js:j.js,ferie:j.ferie};
   });
