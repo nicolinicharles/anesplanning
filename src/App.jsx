@@ -173,6 +173,8 @@ function numSem(key){
 }
 function poids(key,ferie){ const js=dkToDate(key).getDay(); if(ferie)return 3; if([5,6,0].includes(js))return 2; return 1.5; }
 function estIndispo(id,key,indispos){ return indispos.some(i=>i.medecinId===id&&key>=i.dateDebut&&key<=i.dateFin); }
+// Une indispo bloque toujours la garde ; seule une indispo "jour" (journée entière) bloque aussi le travail de jour (BO/CS).
+function estIndispoJourEntier(id,key,indispos){ return indispos.some(i=>i.medecinId===id&&(i.type||"jour")==="jour"&&key>=i.dateDebut&&key<=i.dateFin); }
 function contrainteBloque(id,key,contraintes){ const j=jourFr(dkToDate(key).getDay()); return contraintes.some(c=>c.medecinId===id&&c.type==="jour_interdit"&&c.valeur===j); }
 function contrainteMax(id,key,contraintes,gardes){
   const j=jourFr(dkToDate(key).getDay());
@@ -488,7 +490,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
   // Vérifie si un médecin peut faire un poste ce jour
   function peutFaire(m, key, currentResult) {
     const result2 = currentResult || result;
-    if (estIndispo(m.id, key, indispos)) return false;
+    if (estIndispoJourEntier(m.id, key, indispos)) return false;
     if (contrainteBloque(m.id, key, contraintes)) return false;
     // Pas de CS/BO si garde ce jour (y compris PONCTUEL)
     const g2=gardes[key];
@@ -1178,7 +1180,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
     const map={};
     for(const ind of indispos){
       const d=dkToDate(ind.dateDebut),f=dkToDate(ind.dateFin);
-      while(d<=f){const k=dk(d);(map[k]=map[k]||new Set()).add(ind.medecinId);d.setDate(d.getDate()+1);}
+      while(d<=f){const k=dk(d);(map[k]=map[k]||new Map()).set(ind.medecinId,ind.type||"jour");d.setDate(d.getDate()+1);}
     }
     return map;
   },[indispos]);
@@ -1307,7 +1309,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
 
       {/* Légende */}
       <div style={{display:"flex",gap:10,marginBottom:14,flexWrap:"wrap",background:"#fff",borderRadius:10,padding:"8px 12px",border:"1px solid "+T.border}}>
-        {[["#f03e3e","Garde"],["#00b86b","CS"],["#4f6ef7","BO"],["#e879a0","Indispo"],["#e5e7f0","WE / Férié"]].map(([c,l])=>(
+        {[["#f03e3e","Garde"],["#00b86b","CS"],["#4f6ef7","BO"],["#e879a0","Indispo"],["#f59e0b","Sans garde"],["#e5e7f0","WE / Férié"]].map(([c,l])=>(
           <div key={l} style={{display:"flex",alignItems:"center",gap:5}}>
             <div style={{width:13,height:13,borderRadius:4,background:c,border:c==="#e5e7f0"?"1px solid #c7d2ec":"none"}}/>
             <span style={{fontSize:11,color:T.textSecondary,fontWeight:600}}>{l}</span>
@@ -1356,7 +1358,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
                 const gardeId=gardes[j.key];
                 const bosId=bos[j.key];
                 const csboJ=csbo[j.key]||{};
-                const indisposJ=indispoParJour[j.key]||new Set();
+                const indisposJ=indispoParJour[j.key]||new Map();
                 const estGrise=estWE||estF;
 
                 return (
@@ -1392,9 +1394,11 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
                       const manqueJ=csboJ._manque||[];
                       const borderR=mi<colonnes.length-1?"1px solid #eef0f8":"none";
                       if(isIndispo&&cells.length===0){
+                        const indT=indisposJ.get(m.id)||"jour";
+                        const amber=indT==="garde";
                         return (
-                          <div key={m.id} style={{width:colW,flexShrink:0,boxSizing:"border-box",borderRight:borderR,background:"#fdf2f8",display:"flex",alignItems:"center",justifyContent:"center",padding:"2px"}}>
-                            <div style={{width:"90%",background:"#fce7f3",border:"1px solid #f9a8d4",borderRadius:5,textAlign:"center",padding:"2px 0",fontSize:9,fontWeight:800,color:"#be185d"}}>✕</div>
+                          <div key={m.id} style={{width:colW,flexShrink:0,boxSizing:"border-box",borderRight:borderR,background:amber?"#fffbeb":"#fdf2f8",display:"flex",alignItems:"center",justifyContent:"center",padding:"2px"}}>
+                            <div style={{width:"90%",background:amber?"#fef3c7":"#fce7f3",border:"1px solid "+(amber?"#fcd34d":"#f9a8d4"),borderRadius:5,textAlign:"center",padding:"2px 0",fontSize:9,fontWeight:800,color:amber?"#b45309":"#be185d"}}>{amber?"🌙":"✕"}</div>
                           </div>
                         );
                       }
@@ -2570,6 +2574,7 @@ function VueEquite({gardes,bos,csbo,annee}){
 function VueIndispos({indispos,setIndispos,currentUser,annee}){
   const [mois,setMois]=useState(new Date().getMonth());
   const [selMed,setSelMed]=useState(currentUser.role==="medecin"?currentUser.id:"");
+  const [typeSel,setTypeSel]=useState("jour");
   const feries=useMemo(()=>joursFeries(annee),[annee]);
 
   const ipj=useMemo(()=>{
@@ -2588,16 +2593,21 @@ function VueIndispos({indispos,setIndispos,currentUser,annee}){
   while(cal.length%7!==0)cal.push(null);
 
   const estIndispoJour=(medId,key)=>indispos.some(i=>i.medecinId===medId&&key>=i.dateDebut&&key<=i.dateFin);
+  const indispoDuJour=(medId,key)=>indispos.find(i=>i.medecinId===medId&&key>=i.dateDebut&&key<=i.dateFin);
 
   const toggleIndispo=(key)=>{
     if(!selMed)return;
-    if(estIndispoJour(selMed,key)){
-      setIndispos(prev=>prev.filter(ind=>{
-        if(ind.medecinId!==selMed)return true;
-        return !(key>=ind.dateDebut&&key<=ind.dateFin);
-      }));
+    const ex=indispoDuJour(selMed,key);
+    const motif=typeSel==="garde"?"Pas de garde (dispo le jour)":"Indisponible";
+    if(ex&&(ex.type||"jour")===typeSel){
+      // même type -> on retire
+      setIndispos(prev=>prev.filter(ind=>!(ind.medecinId===selMed&&key>=ind.dateDebut&&key<=ind.dateFin)));
+    }else if(ex){
+      // type différent -> on change le type
+      setIndispos(prev=>prev.map(ind=>(ind.medecinId===selMed&&key>=ind.dateDebut&&key<=ind.dateFin)?{...ind,type:typeSel,motif}:ind));
     }else{
-      setIndispos(prev=>[...prev,{id:Date.now()+"_"+key,medecinId:selMed,dateDebut:key,dateFin:key,motif:"Indisponible"}]);
+      // rien -> on ajoute
+      setIndispos(prev=>[...prev,{id:Date.now()+"_"+key,medecinId:selMed,dateDebut:key,dateFin:key,type:typeSel,motif}]);
     }
   };
 
@@ -2643,6 +2653,25 @@ function VueIndispos({indispos,setIndispos,currentUser,annee}){
         </div>
       )}
 
+      {/* Type d'indisponibilité */}
+      {selMed&&(
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:11,fontWeight:700,color:T.textSecondary,marginBottom:6}}>Type d'indisponibilité à poser :</div>
+          <div style={{display:"flex",gap:8}}>
+            {[["jour","✕","Journée entière","Ni garde ni travail de jour","#be185d","#fce7f3","#f9a8d4"],["garde","🌙","Pas de garde","Dispo le jour (BO/CS)","#b45309","#fef3c7","#fcd34d"]].map(([t,sym,lab,sub,col,bg,bd])=>{
+              const on=typeSel===t;
+              return (
+                <button key={t} onClick={()=>setTypeSel(t)}
+                  style={{flex:1,padding:"8px 10px",borderRadius:10,border:"2px solid "+(on?bd:T.border),background:on?bg:"#fff",cursor:"pointer",transition:"all 0.15s",textAlign:"left"}}>
+                  <div style={{fontSize:12,fontWeight:800,color:on?col:T.textPrimary}}>{sym} {lab}</div>
+                  <div style={{fontSize:9,fontWeight:600,color:on?col:T.textMuted}}>{sub}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Mois */}
       <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
         {MOIS.map((m,i)=>{
@@ -2685,15 +2714,18 @@ function VueIndispos({indispos,setIndispos,currentUser,annee}){
                   {estF&&<span style={{marginLeft:3,fontSize:7,background:"#fef3c7",color:"#d97706",borderRadius:3,padding:"0 3px",fontWeight:700}}>F</span>}
                 </div>
                 {/* Badge médecin actif indispo */}
-                {estSelIndispo&&(
-                  <div style={{background:cSel.border,borderRadius:5,padding:"2px 0",textAlign:"center",fontSize:9,fontWeight:800,color:"#fff",boxShadow:"0 1px 3px rgba(0,0,0,0.1)"}}>✕ {medSelActif?.nom.slice(0,3)}</div>
-                )}
+                {estSelIndispo&&(()=>{
+                  const t=(indispoDuJour(selMed,key)?.type)||"jour";
+                  const col=t==="garde"?"#d97706":cSel.border;
+                  return <div style={{background:col,borderRadius:5,padding:"2px 0",textAlign:"center",fontSize:9,fontWeight:800,color:"#fff",boxShadow:"0 1px 3px rgba(0,0,0,0.1)"}}>{t==="garde"?"🌙":"✕"} {medSelActif?.nom.slice(0,3)}</div>;
+                })()}
                 {/* Autres médecins */}
                 <div style={{display:"flex",flexDirection:"column",gap:2,marginTop:estSelIndispo?3:0}}>
                   {autresInds.slice(0,2).map((ind,i)=>{
                     const c=getCouleur(ind.medecinId);
                     const m=MEDECINS.find(x=>x.id===ind.medecinId);
-                    return <div key={i} style={{background:c.bg,color:c.text,borderRadius:3,padding:"1px 3px",fontSize:8,fontWeight:700,border:"1px solid "+c.border,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{m?.nom?.slice(0,4)}</div>;
+                    const t=(ind.type||"jour");
+                    return <div key={i} style={{background:c.bg,color:c.text,borderRadius:3,padding:"1px 3px",fontSize:8,fontWeight:700,border:"1px solid "+c.border,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{t==="garde"?"🌙":"✕"}{m?.nom?.slice(0,4)}</div>;
                   })}
                   {autresInds.length>2&&<div style={{fontSize:7,color:T.textMuted,fontWeight:600,textAlign:"center"}}>+{autresInds.length-2}</div>}
                 </div>
