@@ -360,6 +360,11 @@ function sSem(m,key,ferie,st){
 }
 
 function genererGardesUneFois(medecins,indispos,contraintes,debutKey,finKey,annee,gardesInitiales={}){
+  // Si un médecin a une limite « max X <jour> par mois », on favorise ses gardes la veille de ce jour :
+  // son repos de garde tombe alors sur ce jour qu'il travaille peu, et il ne perd pas de journée ailleurs.
+  const BONUS_VEILLE=15000;
+  const bonusVeille=(m,key)=>{const jl=jourFr((dkToDate(key).getDay()+1)%7);
+    return contraintes.some(c=>c.medecinId===m.id&&c.type==="max_par_mois"&&c.valeur===jl)?BONUS_VEILLE:0;};
   const ja=tousJours(annee);
   const jours=ja.filter(j=>j.key>=debutKey&&j.key<=finKey);
   // Partir avec les gardes initiales (remplaçants pré-placés)
@@ -402,7 +407,7 @@ function genererGardesUneFois(medecins,indispos,contraintes,debutKey,finKey,anne
   for(let i=0;i<jours.length;i++){
     const j=jours[i];if(![1,2,3,4].includes(j.js)||gardes[j.key])continue;
     let cands=st.filter(m=>candOk(m,j.key,indispos,contraintes,gardes,[]));
-    if(cands.length>0){cands.sort((a,b)=>sSem(b,j.key,j.ferie,st)-sSem(a,j.key,j.ferie,st));const c=cands[0];gardes[j.key]=c.id;addSt(st,c.id,j.key,j.ferie);}
+    if(cands.length>0){cands.sort((a,b)=>sSem(b,j.key,j.ferie,st)+bonusVeille(b,j.key)-sSem(a,j.key,j.ferie,st)-bonusVeille(a,j.key));const c=cands[0];gardes[j.key]=c.id;addSt(st,c.id,j.key,j.ferie);}
   }
   const kj=[...jours.filter(j=>[1,2,3,4].includes(j.js)).map(j=>j.key)];
   for(let tour=0;tour<800;tour++){
@@ -427,7 +432,7 @@ function genererGardesUneFois(medecins,indispos,contraintes,debutKey,finKey,anne
   for(const j of jours){
     if(!estLibre(j.key))continue;
     let cands=st.filter(m=>candOk(m,j.key,indispos,contraintes,gardes,[]));
-    if(cands.length>0){cands.sort((a,b)=>sSem(b,j.key,j.ferie,st)-sSem(a,j.key,j.ferie,st));const c=cands[0];gardes[j.key]=c.id;addSt(st,c.id,j.key,j.ferie);continue;}
+    if(cands.length>0){cands.sort((a,b)=>sSem(b,j.key,j.ferie,st)+bonusVeille(b,j.key)-sSem(a,j.key,j.ferie,st)-bonusVeille(a,j.key));const c=cands[0];gardes[j.key]=c.id;addSt(st,c.id,j.key,j.ferie);continue;}
     // Réparation : libérer un médecin en déplaçant une de ses gardes proches vers quelqu'un d'autre
     const d=dkToDate(j.key);let repare=false;
     const ordre=st.slice().sort((a,b)=>bonus(b,st,poids(j.key,j.ferie))-bonus(a,st,poids(j.key,j.ferie)));
@@ -663,7 +668,26 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
   });
 
   // Vérifie si un médecin peut faire un poste ce jour
+  // Règle « max X <jour> par mois » (Réglages) : compte les jours travaillés, garde ou CS/BO
+  function sousMaxParMois(m, key, res) {
+    const d = dkToDate(key), js = d.getDay(), jour = jourFr(js);
+    const c = contraintes.find(x => x.medecinId === m.id && x.type === "max_par_mois" && x.valeur === jour);
+    if (!c) return true;
+    const dern = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    let n = 0;
+    for (let i = 1; i <= dern; i++) {
+      const dd = new Date(d.getFullYear(), d.getMonth(), i);
+      if (dd.getDay() !== js) continue;
+      const k = dk(dd);
+      if (k === key) continue;
+      const v = (k >= debutKey && k <= finKey) ? (res[k] || {}) : (csbo[k] || {});
+      if (gardes[k] === m.id || slotDuMedecin(v, m.id)) n++;
+    }
+    return n < Number(c.max || 2);
+  }
+
   function peutFaire(m, key, currentResult, slot) {
+    if (!sousMaxParMois(m, key, currentResult || result)) return false;
     if (slot && SLOT_INFO[slot].type !== 'cs' && estIndispoGardeBloc(m.id, key, indispos)) return false;
     const result2 = currentResult || result;
     if (estIndispoJourEntier(m.id, key, indispos)) return false;
@@ -1259,6 +1283,16 @@ function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,an
       if(slotDuMedecin(csbo[decal(1)]||{},medecin.id)) infos.push("Son CS/BO du lendemain sera retiré (repos de garde)");
     } else {
       if([0,6].includes(js)||ferie) infos.push("Week-end ou férié");
+    }
+  }
+  // Règle « max X <jour> travaillés par mois »
+  if(choix!=="libre"){
+    const cMax=contraintes.find(x=>x.medecinId===medecin.id&&x.type==="max_par_mois"&&x.valeur===jourFr(js));
+    if(cMax){
+      const dern=new Date(date.getFullYear(),date.getMonth()+1,0).getDate();let n=0;
+      for(let i=1;i<=dern;i++){const dd=new Date(date.getFullYear(),date.getMonth(),i);if(dd.getDay()!==js)continue;const k=dk(dd);if(k===dateKey)continue;
+        if(gardeDe(k)===medecin.id||slotDuMedecin(csbo[k]||{},medecin.id))n++;}
+      if(n>=Number(cMax.max||2)) alertes.push("Déjà "+n+" "+jourFr(js)+"s travaillés ce mois (max "+cMax.max+")");
     }
   }
   if(periodeValidee) infos.push("Période validée — la modification s'applique quand même");
@@ -3186,7 +3220,7 @@ function VueContraintes({contraintes,setContraintes,currentUser}){
           <div>
             <label style={{fontSize:11,fontWeight:600,color:T.textSecondary,display:"block",marginBottom:5,textTransform:"uppercase"}}>Type</label>
             <select value={type} onChange={e=>setType(e.target.value)} style={{...sel,marginBottom:0}}>
-              <option value="max_par_mois" style={{background:T.surfaceUp}}>Max/mois</option>
+              <option value="max_par_mois" style={{background:T.surfaceUp}}>Max jours travaillés/mois</option>
               <option value="jour_interdit" style={{background:T.surfaceUp}}>Jour interdit</option>
             </select>
           </div>
@@ -3215,7 +3249,7 @@ function VueContraintes({contraintes,setContraintes,currentUser}){
             <Card key={con.id} style={{padding:"10px 14px"}}>
               <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                 <span style={{background:c.bg,color:c.text,border:"1px solid "+c.border,borderRadius:6,padding:"2px 8px",fontWeight:700,fontSize:11}}>{m?.nom}</span>
-                <span style={{fontSize:12,color:T.textSecondary,fontWeight:600}}>{con.type==="max_par_mois"?"Max/mois":"Jour interdit"}</span>
+                <span style={{fontSize:12,color:T.textSecondary,fontWeight:600}}>{con.type==="max_par_mois"?"Max jours travaillés/mois (garde + CS/BO)":"Jour interdit"}</span>
                 <span style={{fontSize:12,color:T.textMuted}}>{con.valeur.charAt(0).toUpperCase()+con.valeur.slice(1)}{con.type==="max_par_mois"?" — max "+con.max:""}</span>
                 {ps&&<button onClick={()=>setContraintes(prev=>prev.filter(x=>x.id!==con.id))} style={{marginLeft:"auto",background:"rgba(244,63,94,0.08)",color:T.red,border:"1px solid rgba(244,63,94,0.2)",borderRadius:6,padding:"3px 8px",cursor:"pointer",fontSize:10,fontWeight:600}}>Supprimer</button>}
               </div>
