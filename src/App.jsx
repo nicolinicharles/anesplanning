@@ -174,6 +174,15 @@ function numSem(key){
 function poids(key,ferie){ const js=dkToDate(key).getDay(); if(ferie)return 3; if([5,6,0].includes(js))return 2; return 1.5; }
 function estIndispo(id,key,indispos){ return indispos.some(i=>i.medecinId===id&&key>=i.dateDebut&&key<=i.dateFin); }
 // Une indispo bloque toujours la garde ; seule une indispo "jour" (journée entière) bloque aussi le travail de jour (BO/CS).
+// Types d'indisponibilité
+const TYPES_INDISPO={
+  jour:      {sym:"✕", lab:"Journée entière",      sub:"Ni garde ni travail de jour", col:"#be185d", bg:"#fce7f3", bd:"#f9a8d4", fond:"#fdf2f8", motif:"Indisponible"},
+  garde:     {sym:"🌙",lab:"Pas de garde",         sub:"Dispo le jour (BO/CS)",       col:"#b45309", bg:"#fef3c7", bd:"#fcd34d", fond:"#fffbeb", motif:"Pas de garde (dispo le jour)"},
+  garde_bloc:{sym:"🩺",lab:"Pas de garde ni bloc", sub:"Dispo en CS seulement",       col:"#047857", bg:"#d1fae5", bd:"#6ee7b7", fond:"#ecfdf5", motif:"Pas de garde ni bloc (CS seulement)"},
+};
+const typeIndispo=t=>TYPES_INDISPO[t]||TYPES_INDISPO.jour;
+// Jour posé en « pas de garde ni bloc » : seule une CS est possible
+function estIndispoGardeBloc(id,key,indispos){ return indispos.some(i=>i.medecinId===id&&i.type==="garde_bloc"&&key>=i.dateDebut&&key<=i.dateFin); }
 function estIndispoJourEntier(id,key,indispos){ return indispos.some(i=>i.medecinId===id&&(i.type||"jour")==="jour"&&key>=i.dateDebut&&key<=i.dateFin); }
 function contrainteBloque(id,key,contraintes){ const j=jourFr(dkToDate(key).getDay()); return contraintes.some(c=>c.medecinId===id&&c.type==="jour_interdit"&&c.valeur===j); }
 function contrainteMax(id,key,contraintes,gardes){
@@ -654,7 +663,8 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
   });
 
   // Vérifie si un médecin peut faire un poste ce jour
-  function peutFaire(m, key, currentResult) {
+  function peutFaire(m, key, currentResult, slot) {
+    if (slot && SLOT_INFO[slot].type !== 'cs' && estIndispoGardeBloc(m.id, key, indispos)) return false;
     const result2 = currentResult || result;
     if (estIndispoJourEntier(m.id, key, indispos)) return false;
     if (contrainteBloque(m.id, key, contraintes)) return false;
@@ -732,8 +742,8 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
 
   // Trier par nombre de candidats (les plus contraints d'abord)
   const sortByConstraint = postes => postes.slice().sort((a, b) => {
-    const ca = medecins.filter(m => peutFaire(m, a.key) && !dejaAffecteJour(m, a.key, result)).length;
-    const cb = medecins.filter(m => peutFaire(m, b.key) && !dejaAffecteJour(m, b.key, result)).length;
+    const ca = medecins.filter(m => peutFaire(m, a.key, undefined, a.slot) && !dejaAffecteJour(m, a.key, result)).length;
+    const cb = medecins.filter(m => peutFaire(m, b.key, undefined, b.slot) && !dejaAffecteJour(m, b.key, result)).length;
     return ca - cb;
   });
 
@@ -747,7 +757,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
 
     // 1) CS d'abord
     for (const poste of sortByConstraint(shuffle(postesCS.slice()))) {
-      const cands = stLocal.filter(m => peutFaire(m, poste.key, resLocal) && !dejaAffecteJour(m, poste.key, resLocal));
+      const cands = stLocal.filter(m => peutFaire(m, poste.key, resLocal, poste.slot) && !dejaAffecteJour(m, poste.key, resLocal));
       if (cands.length === 0) { nonRemplis++; continue; }
       cands.sort((a, b) => scoreCS(b) - scoreCS(a));
       const c = cands[0];
@@ -761,7 +771,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
     const postesBOAutres = postesBO.filter(p => p.slot !== 'bom');
     const ordreBO = [...sortByConstraint(shuffle(postesBOM.slice())), ...sortByConstraint(shuffle(postesBOAutres.slice()))];
     for (const poste of ordreBO) {
-      const cands = stLocal.filter(m => peutFaire(m, poste.key, resLocal) && !dejaAffecteJour(m, poste.key, resLocal));
+      const cands = stLocal.filter(m => peutFaire(m, poste.key, resLocal, poste.slot) && !dejaAffecteJour(m, poste.key, resLocal));
       if (cands.length === 0) { nonRemplis++; continue; }
       if (poste.slot === 'bom') cands.sort((a, b) => (a.bom - b.bom) || (scoreBO(b) - scoreBO(a)));
       else cands.sort((a, b) => scoreBO(b) - scoreBO(a));
@@ -782,7 +792,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
         if (v[poste.slot] !== trop.id) continue;
         const i = SLOT_INFO[poste.slot];
         delete v[poste.slot]; trop.cs -= i.cs; trop.bo -= i.bo; trop.u -= i.u;
-        if (peutFaire(manque, poste.key, resLocal) && !dejaAffecteJour(manque, poste.key, resLocal)) {
+        if (peutFaire(manque, poste.key, resLocal, poste.slot) && !dejaAffecteJour(manque, poste.key, resLocal)) {
           v[poste.slot] = manque.id; manque.cs += i.cs; manque.bo += i.bo; manque.u += i.u; fait = true; break;
         } else { v[poste.slot] = trop.id; trop.cs += i.cs; trop.bo += i.bo; trop.u += i.u; }
       }
@@ -809,7 +819,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
             // le déplacement doit réduire l'écart total
             if ((trop.u-trop.cible) - (manque.u-manque.cible) <= i.u) continue;
             delete v[poste.slot];
-            if (peutFaire(manque, poste.key, resLocal) && !dejaAffecteJour(manque, poste.key, resLocal)) {
+            if (peutFaire(manque, poste.key, resLocal, poste.slot) && !dejaAffecteJour(manque, poste.key, resLocal)) {
               v[poste.slot] = manque.id;
               trop.cs -= i.cs; trop.bo -= i.bo; trop.u -= i.u;
               manque.cs += i.cs; manque.bo += i.bo; manque.u += i.u;
@@ -832,7 +842,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
         const v = resLocal[poste.key]||{};
         if (v.bom !== trop.id) continue;
         delete v.bom;
-        if (peutFaire(manque, poste.key, resLocal) && !dejaAffecteJour(manque, poste.key, resLocal)) {
+        if (peutFaire(manque, poste.key, resLocal, poste.slot) && !dejaAffecteJour(manque, poste.key, resLocal)) {
           v.bom = manque.id;
           trop.bom--; trop.u -= 0.5; trop.bo -= 0.5;
           manque.bom++; manque.u += 0.5; manque.bo += 0.5;
@@ -1236,7 +1246,12 @@ function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,an
     if(actuel==="garde"&&choix!=="garde") alertes.push("Ce jour n'aura plus de garde");
   }
   if(choix!=="libre"){
-    if(indispo) alertes.push((indispo.type||"jour")==="garde"?"A demandé pas de garde ce jour":"Indisponible ce jour");
+    if(indispo){
+      const t=indispo.type||"jour";
+      if(t==="jour") alertes.push("Indisponible ce jour");
+      else if(t==="garde"&&choix==="garde") alertes.push("A demandé pas de garde ce jour");
+      else if(t==="garde_bloc"&&choix!=="cs") alertes.push("Pas de garde ni bloc ce jour (CS seulement)");
+    }
     if(choix==="garde"){
       if(gardeDe(decal(-1))===medecin.id) alertes.push("Déjà de garde la veille");
       if(gardeDe(decal(1))===medecin.id) alertes.push("Déjà de garde le lendemain");
@@ -1737,10 +1752,10 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
                       const ouvrir=()=>{ if(!isAdmin)return; if(estTitulaire)setCaseSel({key:j.key,medId:m.id}); else if(cells.length>0)setModalDate(j.key); };
                       if(isIndispo&&cells.length===0){
                         const indT=indisposJ.get(m.id)||"jour";
-                        const amber=indT==="garde";
+                        const ti=typeIndispo(indT);
                         return (
-                          <div key={m.id} onClick={ouvrir} style={{width:colW,flexShrink:0,boxSizing:"border-box",borderRight:borderR,background:amber?"#fffbeb":"#fdf2f8",display:"flex",alignItems:"center",justifyContent:"center",padding:"2px",cursor:cliquable?"pointer":"default"}}>
-                            <div style={{width:"90%",background:amber?"#fef3c7":"#fce7f3",border:"1px solid "+(amber?"#fcd34d":"#f9a8d4"),borderRadius:5,textAlign:"center",padding:"2px 0",fontSize:9,fontWeight:800,color:amber?"#b45309":"#be185d"}}>{amber?"🌙":"✕"}</div>
+                          <div key={m.id} onClick={ouvrir} title={ti.motif} style={{width:colW,flexShrink:0,boxSizing:"border-box",borderRight:borderR,background:ti.fond,display:"flex",alignItems:"center",justifyContent:"center",padding:"2px",cursor:cliquable?"pointer":"default"}}>
+                            <div style={{width:"90%",background:ti.bg,border:"1px solid "+ti.bd,borderRadius:5,textAlign:"center",padding:"2px 0",fontSize:9,fontWeight:800,color:ti.col}}>{ti.sym}</div>
                           </div>
                         );
                       }
@@ -2975,7 +2990,7 @@ function VueIndispos({indispos,setIndispos,currentUser,annee}){
   const toggleIndispo=(key)=>{
     if(!selMed)return;
     const ex=indispoDuJour(selMed,key);
-    const motif=typeSel==="garde"?"Pas de garde (dispo le jour)":"Indisponible";
+    const motif=typeIndispo(typeSel).motif;
     if(ex&&(ex.type||"jour")===typeSel){
       // même type -> on retire
       setIndispos(prev=>prev.filter(ind=>!(ind.medecinId===selMed&&key>=ind.dateDebut&&key<=ind.dateFin)));
@@ -3034,8 +3049,8 @@ function VueIndispos({indispos,setIndispos,currentUser,annee}){
       {selMed&&(
         <div style={{marginBottom:12}}>
           <div style={{fontSize:11,fontWeight:700,color:T.textSecondary,marginBottom:6}}>Type d'indisponibilité à poser :</div>
-          <div style={{display:"flex",gap:8}}>
-            {[["jour","✕","Journée entière","Ni garde ni travail de jour","#be185d","#fce7f3","#f9a8d4"],["garde","🌙","Pas de garde","Dispo le jour (BO/CS)","#b45309","#fef3c7","#fcd34d"]].map(([t,sym,lab,sub,col,bg,bd])=>{
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+            {Object.entries(TYPES_INDISPO).map(([t,{sym,lab,sub,col,bg,bd}])=>{
               const on=typeSel===t;
               return (
                 <button key={t} onClick={()=>setTypeSel(t)}
@@ -3093,8 +3108,8 @@ function VueIndispos({indispos,setIndispos,currentUser,annee}){
                 {/* Badge médecin actif indispo */}
                 {estSelIndispo&&(()=>{
                   const t=(indispoDuJour(selMed,key)?.type)||"jour";
-                  const col=t==="garde"?"#d97706":cSel.border;
-                  return <div style={{background:col,borderRadius:5,padding:"2px 0",textAlign:"center",fontSize:9,fontWeight:800,color:"#fff",boxShadow:"0 1px 3px rgba(0,0,0,0.1)"}}>{t==="garde"?"🌙":"✕"} {medSelActif?.nom.slice(0,3)}</div>;
+                  const col=t==="garde"?"#d97706":t==="garde_bloc"?"#059669":cSel.border;
+                  return <div style={{background:col,borderRadius:5,padding:"2px 0",textAlign:"center",fontSize:9,fontWeight:800,color:"#fff",boxShadow:"0 1px 3px rgba(0,0,0,0.1)"}}>{typeIndispo(t).sym} {medSelActif?.nom.slice(0,3)}</div>;
                 })()}
                 {/* Autres médecins */}
                 <div style={{display:"flex",flexDirection:"column",gap:2,marginTop:estSelIndispo?3:0}}>
@@ -3102,7 +3117,7 @@ function VueIndispos({indispos,setIndispos,currentUser,annee}){
                     const c=getCouleur(ind.medecinId);
                     const m=MEDECINS.find(x=>x.id===ind.medecinId);
                     const t=(ind.type||"jour");
-                    return <div key={i} style={{background:c.bg,color:c.text,borderRadius:3,padding:"1px 3px",fontSize:8,fontWeight:700,border:"1px solid "+c.border,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{t==="garde"?"🌙":"✕"}{m?.nom?.slice(0,4)}</div>;
+                    return <div key={i} style={{background:c.bg,color:c.text,borderRadius:3,padding:"1px 3px",fontSize:8,fontWeight:700,border:"1px solid "+c.border,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{typeIndispo(t).sym}{m?.nom?.slice(0,4)}</div>;
                   })}
                   {autresInds.length>2&&<div style={{fontSize:7,color:T.textMuted,fontWeight:600,textAlign:"center"}}>+{autresInds.length-2}</div>}
                 </div>
