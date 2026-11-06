@@ -1363,6 +1363,77 @@ function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,an
   );
 }
 
+// ── EXPORT EXCEL (format du planning de la société) ──────────────────────────
+// Ordre des colonnes du fichier de la société, avec le nom de famille de chaque médecin
+const COLONNES_SOCIETE=[
+  {id:"frederic",nom:"CAREMIL"},{id:"oscar",nom:"ROSALES"},{id:"idris",nom:"AMROUCHE"},
+  {id:"sophie",nom:"GAUMETOU"},{id:"rodolphe",nom:"LELAIDIER"},{id:"charles",nom:"NICOLINI"},{id:"lydia",nom:"AMEUR"},
+];
+const STYLE_SOCIETE={
+  GARDE:{color:"#ff0000"}, CS:{color:"#38a800"}, BO:{color:"#000000"},
+  "BO MATIN":{color:"#000000",bg:"#ffff00"}, "BO/CS":{color:"#000000",bg:"#ff9900"}, "X":{color:"#ff0000"},
+};
+const LIB_SOCIETE={cs:"CS",bo:"BO",bom:"BO MATIN",bocs:"BO/CS"};
+
+// Construit les lignes du mois : pour chaque jour, 7 médecins + Remplaçant 1, 2, 3
+function lignesExportMois({annee,mois,gardes,csbo,bos,indispos,remplacants,manquesDuJour}){
+  const feries=joursFeries(annee), dern=new Date(annee,mois+1,0).getDate(), lignes=[];
+  const nomRemp=id=>remplacants.find(r=>r.id===id)?.nom||"Remplaçant";
+  for(let d=1;d<=dern;d++){
+    const date=new Date(annee,mois,d), k=dk(date), js=date.getDay();
+    const gris=[0,6].includes(js)||feries.has(k);
+    const g=gardes[k]||"", v=csbo[k]||{};
+    const gid=g.startsWith("PONCTUEL:")?g.split(":")[1]:g;
+    const cases=COLONNES_SOCIETE.map(c=>{
+      const morceaux=[];
+      if(gid===c.id){const r=g.startsWith("PONCTUEL:")?g.split(":").slice(2).join(":"):"";morceaux.push({t:"GARDE",suffixe:r?" "+r.toUpperCase():""});}
+      const tp=typePosteCSBO(v,c.id);
+      if(tp){const r=(v._remp||{})[c.id];morceaux.push({t:LIB_SOCIETE[tp],suffixe:r?" "+r.toUpperCase():""});}
+      if(!morceaux.length&&indispos.some(i=>i.medecinId===c.id&&(i.type||"jour")==="jour"&&k>=i.dateDebut&&k<=i.dateFin))morceaux.push({t:"X",suffixe:""}); // indispo journée entière : croix rouge
+      return morceaux;
+    });
+    // Remplaçant 1 : jours posés pour les remplaçants (payés par la société)
+    const r1=[];
+    if(g.startsWith("remp_"))r1.push({t:"GARDE",suffixe:" "+nomRemp(g).toUpperCase(),vert:true});
+    if(bos[k])r1.push({t:"BO",suffixe:" "+nomRemp(bos[k]).toUpperCase(),vert:true});
+    // Remplaçant 2 : postes non attribués
+    const r2=(manquesDuJour(k)||[]).map(m=>({t:m.replace("BO½","BO MATIN").toUpperCase(),suffixe:""}));
+    lignes.push({date,gris,cases:[...cases,r1,r2,[]]});
+  }
+  return lignes;
+}
+
+// Tableau HTML avec les couleurs (collé tel quel dans Excel ou Google Sheets)
+function htmlExportMois(lignes,{avecEntetes,annee,mois}){
+  const css=(m,gris)=>{
+    const st=STYLE_SOCIETE[m.t.replace(/^\d+ /,"")]||STYLE_SOCIETE.BO;
+    const bg=m.vert?"#34a853":st.bg||(gris?"#a6a6a6":"#ffffff");
+    return "background:"+bg+";color:"+(m.vert?"#000000":st.color)+";font-weight:bold;";
+  };
+  const td=(morceaux,gris)=>{
+    const base="border:1px solid #000;text-align:center;font-family:Arial;font-size:9pt;font-weight:bold;";
+    if(!morceaux.length)return '<td style="'+base+'background:'+(gris?"#a6a6a6":"#ffffff")+';"></td>';
+    const txt=morceaux.map(m=>m.t+m.suffixe).join(" + ");
+    // Plusieurs éléments dans la case : texte noir, sans couleur de fond
+    const style=morceaux.length>1?"background:"+(gris?"#a6a6a6":"#ffffff")+";color:#000000;":css(morceaux[0],gris);
+    return '<td style="'+base+style+'">'+txt.replace(/&/g,"&amp;").replace(/</g,"&lt;")+'</td>';
+  };
+  let h='<table style="border-collapse:collapse">';
+  if(avecEntetes){
+    const th=(t,bg)=>'<th style="border:1px solid #000;background:'+bg+';font-family:Arial;font-size:9pt;font-weight:bold;">'+t+'</th>';
+    h+='<tr>'+th(MOIS[mois].toUpperCase()+" "+annee,"#8e7cc3")+COLONNES_SOCIETE.map(c=>th(c.nom,"#8e7cc3")).join("")+th("Remplaçant 1","#ea9999")+th("Remplaçant 2","#ea9999")+th("Remplaçant 3","#ea9999")+'</tr>';
+  }
+  for(const l of lignes){
+    h+='<tr>';
+    if(avecEntetes)h+='<td style="border:1px solid #000;text-align:right;font-family:Arial;font-size:9pt;background:'+(l.gris?"#a6a6a6":"#ffffff")+';">'+l.date.getDate()+" "+MOIS[l.date.getMonth()].toLowerCase()+'</td>';
+    h+=l.cases.map(c=>td(c,l.gris)).join("")+'</tr>';
+  }
+  return h+'</table>';
+}
+function texteExportMois(lignes){
+  return lignes.map(l=>l.cases.map(c=>c.map(m=>m.t+m.suffixe).join(" + ")).join("\t")).join("\n");
+}
+
 // Case d'une colonne de remplaçant : ses jours sont payés par la société
 function ModalCaseRemplacant({dateKey,remp,gardes,bos,annee,onClose,onApply}){
   const date=dkToDate(dateKey), js=date.getDay();
@@ -1700,6 +1771,29 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
     return out;
   };
 
+  // Export du mois affiché au format du tableau de la société
+  const lignesExport=()=>lignesExportMois({annee,mois:moisActif,gardes,csbo,bos,indispos,remplacants,manquesDuJour});
+  const copierExcel=async()=>{
+    const l=lignesExport();
+    const html=htmlExportMois(l,{avecEntetes:false,annee,mois:moisActif}), txt=texteExportMois(l);
+    try{
+      await navigator.clipboard.write([new ClipboardItem({"text/html":new Blob([html],{type:"text/html"}),"text/plain":new Blob([txt],{type:"text/plain"})})]);
+    }catch(e){
+      // Solution de secours : copie via une zone temporaire
+      const div=document.createElement("div");div.innerHTML=html;div.style.position="fixed";div.style.left="-9999px";document.body.appendChild(div);
+      const r=document.createRange();r.selectNodeContents(div);const sel=window.getSelection();sel.removeAllRanges();sel.addRange(r);
+      document.execCommand("copy");sel.removeAllRanges();document.body.removeChild(div);
+    }
+    showToast("Copié ✓ — colle dans la case du 1er du mois (colonne CAREMIL)");
+  };
+  const telechargerExcel=()=>{
+    const l=lignesExport();
+    const html='<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>'+htmlExportMois(l,{avecEntetes:true,annee,mois:moisActif})+'</body></html>';
+    const a=document.createElement("a");a.href=URL.createObjectURL(new Blob(["\ufeff"+html],{type:"application/vnd.ms-excel"}));
+    a.download="Planning_"+MOIS[moisActif]+"_"+annee+".xls";document.body.appendChild(a);a.click();document.body.removeChild(a);
+    showToast("Fichier Excel téléchargé ✓");
+  };
+
   const indispoParJour=useMemo(()=>{
     const map={};
     for(const ind of indispos){
@@ -1798,43 +1892,15 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
         })}
       </div>
 
-      {/* Bouton export PDF */}
-      <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
-        <button onClick={()=>{
-          const rows=semaines.map((sem)=>{
-            const semRow=`<tr><td colspan="${colonnes.length+1}" style="background:#e8ecff;color:#3b55e0;font-weight:700;font-size:9px;padding:3px 6px">Semaine ${numSem(sem[0].key)}</td></tr>`;
-            const dayRows=sem.map(j=>{
-              const date=dkToDate(j.key);
-              const estWE=[0,6].includes(j.js);
-              const gardeId2=gardes[j.key];
-              const csboJ2=csbo[j.key]||{};
-              const bg=estWE||j.ferie?"#f0f2fa":"#fff";
-              const dateCell=`<td style="padding:3px 6px;font-weight:700;background:#f7f9ff;border:1px solid #e0e4f4;white-space:nowrap;font-size:9px;color:${j.ferie?"#b45309":estWE?"#6b7280":"#333"}">${JOURS[j.js].slice(0,3)} ${date.getDate()}${j.ferie?" F":""}</td>`;
-              const cells=colonnes.map(m=>{
-                const remp2=gardeId2&&gardeId2.startsWith("PONCTUEL:")?{titulaireId:gardeId2.split(":")[1]}:null;
-                const gardeReel2=remp2?remp2.titulaireId:gardeId2;
-                const isG=gardeReel2===m.id;
-                const tp2=typePosteCSBO(csboJ2,m.id);
-                const aff2=tp2?POSTE_AFFICHAGE[tp2]:null;
-                let content="";
-                if(isG) content=`<span style="background:#fff0f0;color:#f03e3e;border:1px solid #fca5a5;border-radius:3px;padding:1px 5px;font-weight:800;font-size:9px">G</span>`;
-                else if(aff2) content=`<span style="background:${aff2.bg};color:${aff2.color};border:1px solid ${aff2.border};border-radius:3px;padding:1px 4px;font-weight:800;font-size:9px;white-space:nowrap">${aff2.label}</span>`;
-                return `<td style="padding:2px;border:1px solid #e0e4f4;text-align:center;background:${bg}">${content}</td>`;
-              }).join("");
-              return `<tr>${dateCell}${cells}</tr>`;
-            }).join("");
-            return semRow+dayRows;
-          }).join("");
-          const headers=colonnes.map(m=>`<th style="background:#4f6ef7;color:#fff;padding:5px 4px;font-size:9px;font-weight:700;text-align:center">${m.nom.slice(0,7)}</th>`).join("");
-          const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Planning ${MOIS[moisActif]} ${annee}</title><style>body{font-family:Arial,sans-serif;margin:16px;}h2{margin:0 0 2px;font-size:16px;}table{width:100%;border-collapse:collapse;}@media print{@page{size:A4 landscape;margin:10mm;}}</style></head><body><h2>AnesPlanning — ${MOIS[moisActif]} ${annee}</h2><p style="color:#666;font-size:10px;margin:0 0 10px">Hôpital Privée d'Ambérieu</p><table><thead><tr><th style="background:#4f6ef7;color:#fff;padding:5px 6px;font-size:9px;text-align:left">Jour</th>${headers}</tr></thead><tbody>${rows}</tbody></table></body></html>`;
-          // Téléchargement direct
-          const a=document.createElement("a");
-          a.href="data:text/html;charset=utf-8,"+encodeURIComponent(html);
-          a.download="Planning_"+MOIS[moisActif]+"_"+annee+".html";
-          a.click();
-        }}
+      {/* Export vers le planning de la société */}
+      <div style={{display:"flex",justifyContent:"flex-end",flexWrap:"wrap",gap:8,marginBottom:10}}>
+        <button onClick={copierExcel}
+          style={{display:"flex",alignItems:"center",gap:6,padding:"8px 14px",borderRadius:9,border:"1px solid #16a34a",background:"#f0fdf4",color:"#15803d",fontWeight:700,cursor:"pointer",fontSize:12}}>
+          📋 Copier pour Excel
+        </button>
+        <button onClick={telechargerExcel}
           style={{display:"flex",alignItems:"center",gap:6,padding:"8px 14px",borderRadius:9,border:"1px solid #4f6ef7",background:"#eff2ff",color:"#4f6ef7",fontWeight:700,cursor:"pointer",fontSize:12}}>
-          📄 Exporter PDF
+          ⬇️ Fichier Excel
         </button>
         {isAdmin&&<button onClick={()=>setAjoutColonne(true)} style={{padding:"7px 12px",borderRadius:9,border:"1px solid #c4b5fd",background:"#f5f3ff",color:"#6d28d9",fontWeight:700,fontSize:12,cursor:"pointer",marginLeft:8}}>➕ Colonne remplaçant</button>}
       </div>
