@@ -552,10 +552,14 @@ function retirerConflitsGarde(csbo, gardes, keys, lendemainAussi = true){
   return {csbo:nc, nb};
 }
 
-// Cible d'unités : objectif personnel + part égale du surplus (ou du manque) de l'équipe
-function cibleUnites(m, totalU, medecins, nbMois) {
-  const objectifs = medecins.reduce((s, x) => s + UNITES_MOIS_100 * x.etp * nbMois, 0);
-  return UNITES_MOIS_100 * m.etp * nbMois + (totalU - objectifs) / medecins.length;
+// Répartition du travail réel (hors jours des remplaçants), comme l'ancien roulement :
+// chacun a d'abord sa part calculée sur 6 ETP (1/6 pour un 100 %, 0,7/6 pour un 70 %…),
+// puis ce qui reste (6 − 5,3 = 0,7 ETP) est partagé à parts égales entre les médecins.
+const ETP_REFERENCE = 6;
+function cibleUnites(m, totalU, medecins) {
+  const base = totalU * m.etp / ETP_REFERENCE;
+  const reste = totalU - medecins.reduce((s, x) => s + totalU * x.etp / ETP_REFERENCE, 0);
+  return base + reste / medecins.length;
 }
 
 // Nombre max de CS/BO la semaine d'un pack ven+dim (et la semaine suivante)
@@ -662,7 +666,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
 
   const dejaCS = st.reduce((s, m) => s + m.cs, 0), dejaBO = st.reduce((s, m) => s + m.bo, 0);
   st.forEach(m => {
-    m.cible = nbMois > 0 ? cibleUnites(m, totalU, medecins, nbMois) : (totalEtp > 0 ? totalU * m.etp / totalEtp : 0);
+    m.cible = cibleUnites(m, totalU, medecins);
     m.cibleCS = totalEtp > 0 ? (dejaCS + totalCS) * m.etp / totalEtp : 0;
     m.cibleBO = totalEtp > 0 ? (dejaBO + totalBO) * m.etp / totalEtp : 0;
   });
@@ -1428,7 +1432,8 @@ function ModalAjoutColonne({remplacants,dejaAffiches,mois,annee,onClose,onChoisi
   );
 }
 
-function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,csbo,setCsbo,besoins,setStats,indispos,contraintes,annee,showToast}){
+function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,setBos=()=>{},csbo,setCsbo,besoins,setStats,indispos,contraintes,annee,showToast}){
+  const [confirmer,setConfirmer]=useState(null); // id de période à supprimer, ou "orphelins"
   const [deb,setDeb]=useState("");
   const [fin,setFin]=useState("");
   const [gen,setGen]=useState(null);
@@ -1443,12 +1448,28 @@ function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,csbo,setCsbo,bes
     setPeriodes(prev=>[...prev,{id:Date.now(),annee,debut:deb,fin,validee:false}].sort((a,b)=>a.debut.localeCompare(b.debut)));
     setDeb("");setFin("");showToast("Période ajoutée !");
   };
+  // Jours de l'année avec du planning mais hors de toute période (restes d'anciens essais)
+  const orphelins=useMemo(()=>{
+    const dansP=k=>periodes.some(p=>(p.annee===undefined||p.annee===annee)&&k>=p.debut&&k<=p.fin);
+    const ks=new Set([...Object.keys(gardes),...Object.keys(csbo),...Object.keys(bos)]);
+    return [...ks].filter(k=>k.startsWith(annee+"-")&&!dansP(k));
+  },[gardes,csbo,bos,periodes,annee]);
+  const effacerOrphelins=()=>{
+    const ng={...gardes},nc={...csbo},nb={...bos};
+    for(const k of orphelins){delete ng[k];delete nc[k];delete nb[k];}
+    setGardes(ng);setCsbo(nc);setBos(nb);setConfirmer(null);
+    showToast(orphelins.length+" jours effacés.","info");
+  };
   const supprimer=id=>{
     const p=periodes.find(x=>x.id===id);
     if(p?.validee){showToast("Période validée, impossible de supprimer.","error");return;}
-    const n={...gardes};const d=dkToDate(p.debut),f=dkToDate(p.fin);
-    while(d<=f){delete n[dk(d)];d.setDate(d.getDate()+1);}
-    setGardes(n);setPeriodes(prev=>prev.filter(x=>x.id!==id));showToast("Supprimée.","info");
+    if(confirmer!==id){setConfirmer(id);return;} // 1er clic : demander confirmation
+    // Supprimer une période efface tout son planning : gardes (titulaires et remplaçants), CS/BO, BO journée des remplaçants
+    const ng={...gardes},nc={...csbo},nb={...bos};const d=dkToDate(p.debut),f=dkToDate(p.fin);
+    while(d<=f){const k=dk(d);delete ng[k];delete nc[k];delete nb[k];d.setDate(d.getDate()+1);}
+    setGardes(ng);setCsbo(nc);setBos(nb);setPeriodes(prev=>prev.filter(x=>x.id!==id));
+    setJoursManquants(prev=>{const n={...prev};delete n[id];delete n[id+"_gardes"];return n;});
+    setConfirmer(null);showToast("Période et planning supprimés.","info");
   };
   const generer=p=>{
     if(p.validee){showToast("Déverrouillez d'abord.","error");return;}
@@ -1540,6 +1561,16 @@ function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,csbo,setCsbo,bes
         </div>
       </Card>
 
+      {orphelins.length>0&&(
+        <Card style={{marginBottom:16,borderColor:"#fde68a",background:"#fffbeb"}}>
+          <div style={{fontSize:13,fontWeight:700,color:"#b45309",marginBottom:4}}>🧹 Anciens essais en {annee}</div>
+          <div style={{fontSize:12,color:T.textSecondary,marginBottom:10}}>{orphelins.length} jour{orphelins.length>1?"s":""} de planning (gardes, CS/BO ou remplaçants) en dehors de toute période. Ils faussent l'Équité.</div>
+          {confirmer==="orphelins"
+            ?<div style={{display:"flex",gap:8}}><Btn onClick={effacerOrphelins} variant="danger" small>Confirmer : effacer</Btn><Btn onClick={()=>setConfirmer(null)} variant="ghost" small>Annuler</Btn></div>
+            :<Btn onClick={()=>setConfirmer("orphelins")} variant="warn" small>Effacer ces restes</Btn>}
+        </Card>
+      )}
+
       <SectionTitle>Nouvelle période</SectionTitle>
       <Card style={{marginBottom:16}}>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
@@ -1581,7 +1612,9 @@ function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,csbo,setCsbo,bes
                 {nb>0&&!p.validee&&<Btn onClick={()=>genererCSBOPeriode(p)} disabled={!!gen} variant="ghost" small>{isG?"⏳":"📋 CS/BO"}</Btn>}
                 {nb>0&&!p.validee&&<Btn onClick={()=>valider(p.id)} variant="success" small>✓ Valider</Btn>}
                 {p.validee&&<Btn onClick={()=>deverr(p.id)} variant="warn" small>🔓 Déverrouiller</Btn>}
-                {!p.validee&&<Btn onClick={()=>supprimer(p.id)} variant="danger" small>Supprimer</Btn>}
+                {!p.validee&&(confirmer===p.id
+                  ?<><Btn onClick={()=>supprimer(p.id)} variant="danger" small>Confirmer : tout effacer</Btn><Btn onClick={()=>setConfirmer(null)} variant="ghost" small>Annuler</Btn></>
+                  :<Btn onClick={()=>supprimer(p.id)} variant="danger" small>Supprimer</Btn>)}
               </div>
               {joursManquants[p.id+"_gardes"]&&joursManquants[p.id+"_gardes"].length>0&&(
                 <div style={{marginTop:10,background:"#fff0f0",border:"1px solid #fca5a5",borderRadius:8,padding:"10px 12px"}}>
@@ -2988,15 +3021,16 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[]}){
     return ks.length?dureeJ(ks[0],ks[ks.length-1]):0;
   })();
   const nbMois=nbMoisPeriodes>0?nbMoisPeriodes:joursCouverts/(ja.length/12);
-  const objectif=m=>UNITES_MOIS_100*m.etp*nbMois;
+  // Travail réel des titulaires (les jours des remplaçants payés par la société ne comptent pas)
+  const totalEtp=MEDECINS.reduce((s,m)=>s+m.etp,0);           // 5,3
+  const part100_6=tu/ETP_REFERENCE;                             // un 100 % sur 6 ETP
+  const part100_53=totalEtp>0?tu/totalEtp:0;                    // un 100 % sur 5,3 ETP
+  const resteEgal=(tu-tu*totalEtp/ETP_REFERENCE)/MEDECINS.length; // part égale des 0,7 ETP restants
+  const objectif=m=>cibleUnites(m,tu,MEDECINS);
   const ecartDe=m=>m.unites-objectif(m);
-  const tempsReel=m=>nbMois>0?m.unites/(UNITES_MOIS_100*nbMois)*100:0;
-  // Surplus de l'équipe au-delà des objectifs, et part égale par personne
-  const surplusTotal=tu-MEDECINS.reduce((s,m)=>s+objectif(m),0);
-  const partSurplus=surplusTotal/MEDECINS.length;
-  // Orange : sous l'objectif ; vert : objectif atteint et surplus proche de la part égale ;
-  // rouge : nettement plus que sa part ; bleu : objectif atteint mais moins que sa part
-  const couleurEcart=ec=>ec< -0.5?"#f59e0b":Math.abs(ec-Math.max(partSurplus,0))<1.5?"#00b86b":ec>partSurplus?"#f03e3e":"#0ea5e9";
+  const reel6=m=>part100_6>0?m.unites/part100_6*100:0;
+  const reel53=m=>part100_53>0?m.unites/part100_53*100:0;
+  const couleurEcart=ec=>Math.abs(ec)<1.5?"#00b86b":ec<0?"#f59e0b":"#f03e3e";
 
   // Catégories affichables
   const categories=[
@@ -3073,9 +3107,9 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[]}){
 
       {/* Objectif */}
       <div style={{background:"rgba(14,165,233,0.05)",border:"1px solid rgba(14,165,233,0.2)",borderRadius:12,padding:"10px 14px",marginBottom:12,fontSize:12,color:T.textSecondary,lineHeight:1.6}}>
-        <strong style={{color:T.textPrimary}}>Objectif :</strong> {UNITES_7SEM_100} unités / 7 semaines pour un 100 % · 70 % = {fmtU(UNITES_7SEM_100*0.7)} · 50 % = {fmtU(UNITES_7SEM_100*0.5)} (vacances comprises)<br/>
-        Période planifiée : <strong style={{color:T.textPrimary}}>{nbMois.toFixed(1).replace(".",",")} mois</strong> · Écart = unités faites − objectif · Réel = % de temps réellement fait<br/>
-        Surplus de l'équipe : <strong style={{color:T.textPrimary}}>{surplusTotal>0?"+":""}{fmtU(surplusTotal)}</strong> unités · part égale : <strong style={{color:T.textPrimary}}>{partSurplus>0?"+":""}{fmtU(partSurplus)}</strong> par personne
+        <strong style={{color:T.textPrimary}}>Travail des titulaires :</strong> {fmtU(tu)} unités (hors remplaçants payés par la société)<br/>
+        Part d'un 100 % : <strong style={{color:T.textPrimary}}>{fmtU(part100_6)}</strong> sur 6 ETP · <strong style={{color:T.textPrimary}}>{fmtU(part100_53)}</strong> sur 5,3 ETP<br/>
+        Objectif = part sur 6 ETP + <strong style={{color:T.textPrimary}}>{fmtU(resteEgal)}</strong> chacun (les 0,7 ETP restants à parts égales) · Écart = unités − objectif
       </div>
 
       {/* Tableau récap complet */}
@@ -3085,7 +3119,7 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[]}){
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
             <thead>
               <tr style={{background:"#f8faff"}}>
-                {["Médecin","G","Sem","V/D","Sam","CS","BO","Unités","Objectif","Écart","Réel"].map(h=>(
+                {["Médecin","G","Sem","V/D","Sam","CS","BO","Unités","Objectif","Écart","Réel 6 ETP","Réel 5,3 ETP"].map(h=>(
                   <th key={h} style={{padding:"8px 6px",textAlign:"center",fontWeight:700,color:T.textMuted,borderBottom:"1px solid "+T.border,whiteSpace:"nowrap",fontSize:10}}>{h}</th>
                 ))}
               </tr>
@@ -3095,7 +3129,8 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[]}){
                 const ec=ecartDe(m);
                 const c=getCouleur(m.id);
                 const ecColor=couleurEcart(ec);
-                const reel=tempsReel(m), prevu=Math.round(m.etp*100);
+                const r6=reel6(m), r53=reel53(m), prevu=Math.round(m.etp*100);
+                const coulReel=r=>Math.abs(r-prevu)<3?"#00b86b":r>prevu?"#f03e3e":"#f59e0b";
                 return (
                   <tr key={m.id} style={{borderBottom:"1px solid "+T.border+"44",background:i%2===0?"#fff":"#fafbff"}}>
                     <td style={{padding:"8px 6px",textAlign:"center"}}>
@@ -3109,7 +3144,8 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[]}){
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:11,color:T.textPrimary}}>{m.unites.toFixed(1)}</td>
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:600,fontSize:11,color:T.textMuted}}>{objectif(m).toFixed(1)}</td>
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:800,fontSize:11,color:ecColor}}>{ec>0?"+":""}{ec.toFixed(1)}</td>
-                    <td style={{padding:"8px 6px",textAlign:"center",fontWeight:800,fontSize:11,color:Math.abs(reel-prevu)<3?"#00b86b":reel>prevu?"#f03e3e":"#f59e0b",whiteSpace:"nowrap"}} title={"Prévu "+prevu+" %"}>{Math.round(reel)} %<div style={{fontSize:8,fontWeight:500,color:T.textMuted}}>prévu {prevu} %</div></td>
+                    <td style={{padding:"8px 6px",textAlign:"center",fontWeight:800,fontSize:11,color:coulReel(r6),whiteSpace:"nowrap"}}>{Math.round(r6)} %<div style={{fontSize:8,fontWeight:500,color:T.textMuted}}>prévu {prevu} %</div></td>
+                    <td style={{padding:"8px 6px",textAlign:"center",fontWeight:800,fontSize:11,color:coulReel(r53),whiteSpace:"nowrap"}}>{Math.round(r53)} %<div style={{fontSize:8,fontWeight:500,color:T.textMuted}}>prévu {prevu} %</div></td>
                   </tr>
                 );
               })}
@@ -3660,7 +3696,7 @@ export default function App(){
     <div style={{minHeight:"100vh",background:T.bg,fontFamily:"'Inter',system-ui,sans-serif",paddingTop:58,paddingBottom:80,backgroundImage:"radial-gradient(circle at 80% 0%,rgba(124,58,237,0.05) 0%,transparent 50%),radial-gradient(circle at 20% 100%,rgba(79,110,247,0.05) 0%,transparent 50%)"}}>
       <TopBar user={user} tab={tab} annee={annee} setAnnee={handleAnnee} onMenu={()=>setMenu(true)}/>
       <div style={{padding:"16px 16px 24px"}}>
-        {tab==="periodes"&&<VuePeriodes periodes={periodes} setPeriodes={setPeriodes} gardes={gardes} setGardes={setGardes} bos={bos} csbo={csbo} setCsbo={setCsbo} besoins={besoins} setStats={setStats} indispos={indispos} contraintes={contraintes} annee={annee} showToast={showToast}/>}
+        {tab==="periodes"&&<VuePeriodes periodes={periodes} setPeriodes={setPeriodes} gardes={gardes} setGardes={setGardes} bos={bos} setBos={setBos} csbo={csbo} setCsbo={setCsbo} besoins={besoins} setStats={setStats} indispos={indispos} contraintes={contraintes} annee={annee} showToast={showToast}/>}
         {tab==="planning"&&(!hasPlanning
           ?<div style={{textAlign:"center",padding:"60px 16px",color:T.textMuted}}>
             <div style={{fontSize:40,marginBottom:12,opacity:0.3}}>📅</div>
