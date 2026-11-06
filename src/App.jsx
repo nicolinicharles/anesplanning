@@ -1375,6 +1375,15 @@ const STYLE_SOCIETE={
 };
 const LIB_SOCIETE={cs:"CS",bo:"BO",bom:"BO MATIN",bocs:"BO/CS"};
 
+// Vacances scolaires zone A (académie de Lyon), d'après le calendrier officiel (service-public.gouv.fr).
+// Du lundi suivant le début des vacances jusqu'à la veille de la reprise.
+const VACANCES_ZONE_A=[
+  ["2026-10-19","2026-11-01"],["2026-12-21","2027-01-03"],["2027-02-15","2027-02-28"],["2027-04-12","2027-04-25"],
+  ["2027-07-05","2027-09-01"],["2027-10-25","2027-11-07"],["2027-12-20","2028-01-02"],["2028-02-21","2028-03-05"],
+  ["2028-04-24","2028-05-08"],["2028-07-04","2028-08-31"],
+];
+const estVacancesScolaires=k=>VACANCES_ZONE_A.some(([d,f])=>k>=d&&k<=f);
+
 // Construit les lignes du mois : pour chaque jour, 7 médecins + Remplaçant 1, 2, 3
 function lignesExportMois({annee,mois,gardes,csbo,bos,indispos,remplacants,manquesDuJour}){
   const feries=joursFeries(annee), dern=new Date(annee,mois+1,0).getDate(), lignes=[];
@@ -1398,7 +1407,9 @@ function lignesExportMois({annee,mois,gardes,csbo,bos,indispos,remplacants,manqu
     if(bos[k])r1.push({t:"BO",suffixe:" "+nomRemp(bos[k]).toUpperCase(),vert:true});
     // Remplaçant 2 : postes non attribués
     const r2=(manquesDuJour(k)||[]).map(m=>({t:m.replace("BO½","BO MATIN").toUpperCase(),suffixe:""}));
-    lignes.push({date,gris,cases:[...cases,r1,r2,[]]});
+    const vac=estVacancesScolaires(k);
+    const colA=js===1?String(numSem(k)):(vac?"VAC SCO":"");
+    lignes.push({date,gris,vac,colA,cases:[...cases,r1,r2,[]]});
   }
   return lignes;
 }
@@ -1421,17 +1432,19 @@ function htmlExportMois(lignes,{avecEntetes,annee,mois}){
   let h='<table style="border-collapse:collapse">';
   if(avecEntetes){
     const th=(t,bg)=>'<th style="border:1px solid #000;background:'+bg+';font-family:Arial;font-size:9pt;font-weight:bold;">'+t+'</th>';
-    h+='<tr>'+th(MOIS[mois].toUpperCase()+" "+annee,"#8e7cc3")+COLONNES_SOCIETE.map(c=>th(c.nom,"#8e7cc3")).join("")+th("Remplaçant 1","#ea9999")+th("Remplaçant 2","#ea9999")+th("Remplaçant 3","#ea9999")+'</tr>';
+    h+='<tr><td></td>'+th(MOIS[mois].toUpperCase()+" "+annee,"#8e7cc3")+COLONNES_SOCIETE.map(c=>th(c.nom,"#8e7cc3")).join("")+th("Remplaçant 1","#ea9999")+th("Remplaçant 2","#ea9999")+th("Remplaçant 3","#ea9999")+'</tr>';
   }
   for(const l of lignes){
     h+='<tr>';
+    if(avecEntetes)h+='<td style="text-align:right;font-family:Arial;font-size:9pt;font-style:italic;color:#1c4587;'+(l.vac?"background:#a4c2f4;":"")+'">'+l.colA+'</td>';
     if(avecEntetes)h+='<td style="border:1px solid #000;text-align:right;font-family:Arial;font-size:9pt;background:'+(l.gris?"#a6a6a6":"#ffffff")+';">'+l.date.getDate()+" "+MOIS[l.date.getMonth()].toLowerCase()+'</td>';
     h+=l.cases.map(c=>td(c,l.gris)).join("")+'</tr>';
   }
   return h+'</table>';
 }
-function texteExportMois(lignes){
-  return lignes.map(l=>l.cases.map(c=>c.map(m=>m.t+m.suffixe).join(" + ")).join("\t")).join("\n");
+function texteExportMois(lignes,{annee,mois}){
+  const entete=[MOIS[mois].toUpperCase()+" "+annee,...COLONNES_SOCIETE.map(c=>c.nom),"Remplaçant 1","Remplaçant 2","Remplaçant 3"].join("\t");
+  return ["\t"+entete,...lignes.map(l=>[l.colA,l.date.getDate()+" "+MOIS[l.date.getMonth()].toLowerCase(),...l.cases.map(c=>c.map(m=>m.t+m.suffixe).join(" + "))].join("\t"))].join("\n");
 }
 
 // Case d'une colonne de remplaçant : ses jours sont payés par la société
@@ -1775,7 +1788,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
   const lignesExport=()=>lignesExportMois({annee,mois:moisActif,gardes,csbo,bos,indispos,remplacants,manquesDuJour});
   const copierExcel=async()=>{
     const l=lignesExport();
-    const html=htmlExportMois(l,{avecEntetes:false,annee,mois:moisActif}), txt=texteExportMois(l);
+    const html=htmlExportMois(l,{avecEntetes:true,annee,mois:moisActif}), txt=texteExportMois(l,{annee,mois:moisActif});
     try{
       await navigator.clipboard.write([new ClipboardItem({"text/html":new Blob([html],{type:"text/html"}),"text/plain":new Blob([txt],{type:"text/plain"})})]);
     }catch(e){
@@ -1784,7 +1797,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
       const r=document.createRange();r.selectNodeContents(div);const sel=window.getSelection();sel.removeAllRanges();sel.addRange(r);
       document.execCommand("copy");sel.removeAllRanges();document.body.removeChild(div);
     }
-    showToast("Copié ✓ — colle dans la case du 1er du mois (colonne CAREMIL)");
+    showToast("Copié ✓ — colle en A2 (à gauche de « AVRIL 2027 »)");
   };
   const telechargerExcel=()=>{
     const l=lignesExport();
