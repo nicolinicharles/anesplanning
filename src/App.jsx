@@ -1432,6 +1432,9 @@ function ModalAjoutColonne({remplacants,dejaAffiches,mois,annee,onClose,onChoisi
   );
 }
 
+// Garde posée pour un remplaçant pré-placé (payé par la société) : à conserver lors des effacements
+function estJourRemplacant(g){ return !!g && String(g).startsWith("remp_"); }
+
 function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,setBos=()=>{},csbo,setCsbo,besoins,setStats,indispos,contraintes,annee,showToast}){
   const [confirmer,setConfirmer]=useState(null); // id de période à supprimer, ou "orphelins"
   const [deb,setDeb]=useState("");
@@ -1448,26 +1451,28 @@ function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,setBos=()=>{},cs
     setPeriodes(prev=>[...prev,{id:Date.now(),annee,debut:deb,fin,validee:false}].sort((a,b)=>a.debut.localeCompare(b.debut)));
     setDeb("");setFin("");showToast("Période ajoutée !");
   };
-  // Jours de l'année avec du planning mais hors de toute période (restes d'anciens essais)
+  // Jours de l'année avec du planning de titulaires hors de toute période (restes d'anciens essais).
+  // Les jours des remplaçants et les indispos ne sont jamais concernés.
   const orphelins=useMemo(()=>{
     const dansP=k=>periodes.some(p=>(p.annee===undefined||p.annee===annee)&&k>=p.debut&&k<=p.fin);
-    const ks=new Set([...Object.keys(gardes),...Object.keys(csbo),...Object.keys(bos)]);
+    const ks=new Set([...Object.keys(gardes).filter(k=>!estJourRemplacant(gardes[k])),...Object.keys(csbo)]);
     return [...ks].filter(k=>k.startsWith(annee+"-")&&!dansP(k));
-  },[gardes,csbo,bos,periodes,annee]);
+  },[gardes,csbo,periodes,annee]);
   const effacerOrphelins=()=>{
-    const ng={...gardes},nc={...csbo},nb={...bos};
-    for(const k of orphelins){delete ng[k];delete nc[k];delete nb[k];}
-    setGardes(ng);setCsbo(nc);setBos(nb);setConfirmer(null);
+    const ng={...gardes},nc={...csbo};
+    for(const k of orphelins){if(!estJourRemplacant(ng[k]))delete ng[k];delete nc[k];}
+    setGardes(ng);setCsbo(nc);setConfirmer(null);
     showToast(orphelins.length+" jours effacés.","info");
   };
   const supprimer=id=>{
     const p=periodes.find(x=>x.id===id);
     if(p?.validee){showToast("Période validée, impossible de supprimer.","error");return;}
     if(confirmer!==id){setConfirmer(id);return;} // 1er clic : demander confirmation
-    // Supprimer une période efface tout son planning : gardes (titulaires et remplaçants), CS/BO, BO journée des remplaçants
-    const ng={...gardes},nc={...csbo},nb={...bos};const d=dkToDate(p.debut),f=dkToDate(p.fin);
-    while(d<=f){const k=dk(d);delete ng[k];delete nc[k];delete nb[k];d.setDate(d.getDate()+1);}
-    setGardes(ng);setCsbo(nc);setBos(nb);setPeriodes(prev=>prev.filter(x=>x.id!==id));
+    // Supprimer une période efface le planning généré (gardes des titulaires, CS/BO).
+    // On garde : les jours posés pour les remplaçants (gardes et BO journée), et les indispos (jamais touchées ici).
+    const ng={...gardes},nc={...csbo};const d=dkToDate(p.debut),f=dkToDate(p.fin);
+    while(d<=f){const k=dk(d);if(!estJourRemplacant(ng[k]))delete ng[k];delete nc[k];d.setDate(d.getDate()+1);}
+    setGardes(ng);setCsbo(nc);setPeriodes(prev=>prev.filter(x=>x.id!==id));
     setJoursManquants(prev=>{const n={...prev};delete n[id];delete n[id+"_gardes"];return n;});
     setConfirmer(null);showToast("Période et planning supprimés.","info");
   };
@@ -1564,7 +1569,7 @@ function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,setBos=()=>{},cs
       {orphelins.length>0&&(
         <Card style={{marginBottom:16,borderColor:"#fde68a",background:"#fffbeb"}}>
           <div style={{fontSize:13,fontWeight:700,color:"#b45309",marginBottom:4}}>🧹 Anciens essais en {annee}</div>
-          <div style={{fontSize:12,color:T.textSecondary,marginBottom:10}}>{orphelins.length} jour{orphelins.length>1?"s":""} de planning (gardes, CS/BO ou remplaçants) en dehors de toute période. Ils faussent l'Équité.</div>
+          <div style={{fontSize:12,color:T.textSecondary,marginBottom:10}}>{orphelins.length} jour{orphelins.length>1?"s":""} de gardes ou CS/BO de titulaires en dehors de toute période. Ils faussent l'Équité. Les indispos et les jours des remplaçants sont conservés.</div>
           {confirmer==="orphelins"
             ?<div style={{display:"flex",gap:8}}><Btn onClick={effacerOrphelins} variant="danger" small>Confirmer : effacer</Btn><Btn onClick={()=>setConfirmer(null)} variant="ghost" small>Annuler</Btn></div>
             :<Btn onClick={()=>setConfirmer("orphelins")} variant="warn" small>Effacer ces restes</Btn>}
