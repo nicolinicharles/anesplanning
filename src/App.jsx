@@ -1212,15 +1212,20 @@ function ModalGarde({dateKey,gardeActuelle,onClose,onSave,remplacants,periodes,a
 // ── MODIFICATION MANUELLE D'UNE CASE DU PLANNING ─────────────────────────────
 
 // Applique le choix d'un poste pour un médecin un jour donné. Renvoie les nouveaux gardes / csbo.
-function appliquerPosteCase(gardes, csbo, key, medId, choix){
+// rempNom : nom du remplaçant qui fait le poste à la place du titulaire (le titulaire paie et garde ses unités)
+function appliquerPosteCase(gardes, csbo, key, medId, choix, rempNom=""){
   const ng={...gardes}, nc={...csbo}, v={...(nc[key]||{})};
   SLOTS_CSBO.forEach(s=>{ if(v[s]===medId) delete v[s]; });
   const g=ng[key];
   const gid=g?(String(g).startsWith("PONCTUEL:")?g.split(":")[1]:g):null;
-  if(choix==="garde") ng[key]=medId;
+  if(choix==="garde") ng[key]=rempNom?("PONCTUEL:"+medId+":"+rempNom):medId;
   else if(gid===medId) delete ng[key];
   const slot=slotPourChoix(v, choix);
   if(slot) v[slot]=medId;
+  // Remplaçant sur un CS/BO du titulaire
+  const rp={...(v._remp||{})}; delete rp[medId];
+  if(slot&&rempNom) rp[medId]=rempNom;
+  if(Object.keys(rp).length) v._remp=rp; else delete v._remp;
   if(v._manque){ v._manque=v._manque.filter(x=>x!==slot); if(!v._manque.length) delete v._manque; }
   if(Object.keys(v).length===0) delete nc[key]; else nc[key]=v;
   return {gardes:ng, csbo:nc};
@@ -1242,7 +1247,7 @@ const CHOIX_CASE=[
   {id:"bocs",  label:"BO/CS",    ...POSTE_AFFICHAGE.bocs},
 ];
 
-function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,annee,onClose,onApply,onOpenRemplacant}){
+function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,annee,remplacants=[],onClose,onApply}){
   const date=dkToDate(dateKey), js=date.getDay();
   const ferie=joursFeries(annee).has(dateKey);
   const g=gardes[dateKey];
@@ -1250,6 +1255,11 @@ function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,an
   const csboJ=csbo[dateKey]||{};
   const actuel=gid===medecin.id?"garde":(typePosteCSBO(csboJ,medecin.id)||"libre");
   const [choix,setChoix]=useState(actuel);
+  // Remplaçant actuel sur ce poste (garde « PONCTUEL » ou CS/BO marqué dans _remp)
+  const rempActuel=actuel==="garde"?(String(g).startsWith("PONCTUEL:")?g.split(":").slice(2).join(":"):""):((csboJ._remp||{})[medecin.id]||"");
+  const [rempNom,setRempNom]=useState(rempActuel);
+  const [autreNom,setAutreNom]=useState("");
+  const nomsRemp=[...new Set([...remplacants.map(r=>r.nom),...(rempActuel?[rempActuel]:[])])];
   const nomDe=id=>{ if(!id)return ""; const m=MEDECINS.find(x=>x.id===id); if(m)return m.nom; if(String(id).startsWith("PONCTUEL:"))return id.split(":").slice(2).join(":"); return id; };
   const decal=n=>dk(new Date(date.getFullYear(),date.getMonth(),date.getDate()+n));
   const indispo=indispos.find(i=>i.medecinId===medecin.id&&dateKey>=i.dateDebut&&dateKey<=i.dateFin);
@@ -1269,7 +1279,7 @@ function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,an
     if(slot&&sansMoi[slot]) infos.push("Remplace "+nomDe(sansMoi[slot])+(choix==="cs"?" (les 2 CS sont pris)":choix==="bo"?" (les 3 BO sont pris)":""));
     if(actuel==="garde"&&choix!=="garde") alertes.push("Ce jour n'aura plus de garde");
   }
-  if(choix!=="libre"){
+  if(choix!=="libre"&&!rempNom){
     if(indispo){
       const t=indispo.type||"jour";
       if(t==="jour") alertes.push("Indisponible ce jour");
@@ -1285,9 +1295,10 @@ function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,an
       if([0,6].includes(js)||ferie) infos.push("Week-end ou férié");
     }
   }
-  if(lendemainGarde(choix)) alertes.push("Lendemain de garde");
+  if(lendemainGarde(choix)&&!rempNom) alertes.push("Lendemain de garde");
+  if(choix!=="libre"&&rempNom) infos.push("Fait par "+rempNom+" : payé par "+medecin.nom+", qui garde ses unités");
   // Règle « max X <jour> travaillés par mois »
-  if(choix!=="libre"){
+  if(choix!=="libre"&&!rempNom){
     const cMax=contraintes.find(x=>x.medecinId===medecin.id&&x.type==="max_par_mois"&&x.valeur===jourFr(js));
     if(cMax){
       const dern=new Date(date.getFullYear(),date.getMonth()+1,0).getDate();let n=0;
@@ -1325,14 +1336,92 @@ function ModalCase({dateKey,medecin,gardes,csbo,indispos,contraintes,periodes,an
             {infos.map((a,i)=><div key={"i"+i} style={{fontSize:12,color:T.textSecondary,background:"#f8faff",border:"1px solid "+T.border,borderRadius:8,padding:"6px 10px"}}>ℹ️ {a}</div>)}
           </div>
         )}
-        {actuel==="garde"&&choix==="garde"&&(
-          <button onClick={onOpenRemplacant} style={{width:"100%",marginBottom:12,padding:"10px",borderRadius:9,border:"1px solid #c4b5fd",background:"#f5f3ff",color:"#6d28d9",fontWeight:700,fontSize:12,cursor:"pointer"}}>
-            🔄 Mettre un remplaçant sur cette garde
-          </button>
+        {choix!=="libre"&&(
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:11,fontWeight:700,color:T.textSecondary,marginBottom:6}}>🔄 Qui fait ce poste ?</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:6}}>
+              {[["",medecin.nom+" lui-même"],...nomsRemp.map(n=>[n,"🔄 "+n])].map(([val,lab])=>{
+                const sel=rempNom===val;
+                return <button key={val||"_moi"} onClick={()=>{setRempNom(val);setAutreNom("");}}
+                  style={{padding:"6px 10px",borderRadius:20,border:"1.5px solid "+(sel?"#7c3aed":T.border),background:sel?"#f5f3ff":"#fff",color:sel?"#6d28d9":T.textSecondary,fontWeight:sel?700:500,fontSize:12,cursor:"pointer"}}>{lab}</button>;
+              })}
+            </div>
+            <input value={autreNom} onChange={e=>{setAutreNom(e.target.value);setRempNom(e.target.value.trim());}} placeholder="Autre remplaçant : nom…"
+              style={{width:"100%",padding:"8px 10px",borderRadius:9,border:"1px solid "+T.border,fontSize:13,boxSizing:"border-box",outline:"none",fontFamily:"inherit"}}/>
+          </div>
         )}
         <div style={{display:"flex",gap:8}}>
           <div style={{flex:1}}><Btn onClick={onClose} variant="ghost" full>Annuler</Btn></div>
-          <div style={{flex:1}}><Btn onClick={()=>onApply(choix)} disabled={choix===actuel||interditRepos(choix)} full>Enregistrer</Btn></div>
+          <div style={{flex:1}}><Btn onClick={()=>onApply(choix,choix==="libre"?"":rempNom)} disabled={choix===actuel&&(choix==="libre"||rempNom===rempActuel)} full>Enregistrer</Btn></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Case d'une colonne de remplaçant : ses jours sont payés par la société
+function ModalCaseRemplacant({dateKey,remp,gardes,bos,annee,onClose,onApply}){
+  const date=dkToDate(dateKey), js=date.getDay();
+  const actuel=gardes[dateKey]===remp.id?"garde":bos[dateKey]===remp.id?"bo":"libre";
+  const [choix,setChoix]=useState(actuel);
+  const nomDe=id=>{ if(!id)return ""; const m=MEDECINS.find(x=>x.id===id); if(m)return m.nom; if(String(id).startsWith("PONCTUEL:"))return id.split(":").slice(2).join(":"); return id; };
+  const infos=[], alertes=[];
+  if(choix==="garde"&&gardes[dateKey]&&gardes[dateKey]!==remp.id) infos.push("Remplace "+nomDe(gardes[dateKey])+" sur la garde");
+  if(choix==="bo"&&bos[dateKey]&&bos[dateKey]!==remp.id) infos.push("Remplace "+nomDe(bos[dateKey])+" sur le BO journée");
+  if(actuel==="garde"&&choix!=="garde") alertes.push("Ce jour n'aura plus de garde");
+  if(choix!=="libre") infos.push("Payé par la société");
+  const opts=[CHOIX_CASE[0],CHOIX_CASE[1],{...CHOIX_CASE[3],label:"BO journée"}];
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:500,backdropFilter:"blur(4px)"}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:"20px 20px 0 0",padding:"16px 20px 32px",width:"100%",maxWidth:520,boxSizing:"border-box",boxShadow:"0 -8px 40px rgba(79,110,247,0.15)",maxHeight:"85vh",overflowY:"auto"}}>
+        <div style={{width:36,height:4,borderRadius:2,background:T.border,margin:"0 auto 14px"}}/>
+        <div style={{marginBottom:14}}>
+          <div style={{fontWeight:800,fontSize:16,color:T.textPrimary}}>{remp.nom} <span style={{fontSize:11,fontWeight:600,color:T.textMuted}}>· remplaçant (société)</span></div>
+          <div style={{fontSize:13,color:T.textSecondary,marginTop:2}}>{JOURS[js]} {date.getDate()} {MOIS[date.getMonth()]} {annee}</div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+          {opts.map(c=>{const sel=choix===c.id;return(
+            <button key={c.id} onClick={()=>setChoix(c.id)} style={{padding:"12px 6px",borderRadius:10,border:"2px solid "+(sel?c.color:T.border),background:sel?c.bg:"#f8faff",cursor:"pointer"}}>
+              <div style={{fontSize:13,fontWeight:800,color:sel?c.color:T.textPrimary}}>{c.label}</div>
+              {actuel===c.id&&<div style={{fontSize:9,color:T.textMuted,marginTop:2}}>actuel</div>}
+            </button>);})}
+        </div>
+        {(infos.length>0||alertes.length>0)&&(
+          <div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:12}}>
+            {alertes.map((a,i)=><div key={"a"+i} style={{fontSize:12,color:"#b45309",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"6px 10px"}}>⚠️ {a}</div>)}
+            {infos.map((a,i)=><div key={"i"+i} style={{fontSize:12,color:T.textSecondary,background:"#f8faff",border:"1px solid "+T.border,borderRadius:8,padding:"6px 10px"}}>ℹ️ {a}</div>)}
+          </div>
+        )}
+        <div style={{display:"flex",gap:8}}>
+          <div style={{flex:1}}><Btn onClick={onClose} variant="ghost" full>Annuler</Btn></div>
+          <div style={{flex:1}}><Btn onClick={()=>onApply(choix)} disabled={choix===actuel} full>Enregistrer</Btn></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Ajouter une colonne de remplaçant sur le mois affiché
+function ModalAjoutColonne({remplacants,dejaAffiches,mois,annee,onClose,onChoisir}){
+  const [nom,setNom]=useState("");
+  const dispo=remplacants.filter(r=>!dejaAffiches.includes(r.id));
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:500,backdropFilter:"blur(4px)"}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:"20px 20px 0 0",padding:"16px 20px 32px",width:"100%",maxWidth:520,boxSizing:"border-box"}}>
+        <div style={{width:36,height:4,borderRadius:2,background:T.border,margin:"0 auto 14px"}}/>
+        <div style={{fontWeight:800,fontSize:16,color:T.textPrimary,marginBottom:4}}>Ajouter un remplaçant</div>
+        <div style={{fontSize:12,color:T.textSecondary,marginBottom:14}}>Colonne affichée en {MOIS[mois]} {annee}. Ses jours seront payés par la société.</div>
+        {dispo.length>0&&(
+          <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:12}}>
+            {dispo.map(r=>(
+              <button key={r.id} onClick={()=>onChoisir(r.id,null)} style={{padding:"10px 12px",borderRadius:9,border:"1px solid "+T.border,background:"#f8faff",textAlign:"left",fontWeight:700,fontSize:13,color:T.textPrimary,cursor:"pointer"}}>➕ {r.nom}</button>
+            ))}
+          </div>
+        )}
+        <div style={{display:"flex",gap:8}}>
+          <input value={nom} onChange={e=>setNom(e.target.value)} placeholder="Nouveau remplaçant : nom…"
+            style={{flex:1,padding:"10px 12px",borderRadius:9,border:"1px solid "+T.border,fontSize:13,outline:"none",fontFamily:"inherit"}}/>
+          <Btn onClick={()=>nom.trim()&&onChoisir(null,nom.trim())} disabled={!nom.trim()}>Ajouter</Btn>
         </div>
       </div>
     </div>
@@ -1532,16 +1621,28 @@ function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,csbo,setCsbo,bes
 
 // ── PLANNING VISUEL ────────────────────────────────────────────────────────────
 
-function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,annee,remplacants,periodes,indispos,contraintes,isAdmin,showToast}){
+function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,annee,remplacants,setRemplacants=()=>{},periodes,indispos,contraintes,isAdmin,showToast}){
   const [moisActif,setMoisActif]=useState(new Date().getMonth());
   const [modalDate,setModalDate]=useState(null);
   const [caseSel,setCaseSel]=useState(null); // {key, medId}
+  const [caseRemp,setCaseRemp]=useState(null); // {key, rempId}
+  const [ajoutColonne,setAjoutColonne]=useState(false);
   const ja=useMemo(()=>tousJours(annee),[annee]);
 
-  const appliquerCase=(choix)=>{
+  const appliquerCaseAvecRemp=(choix,rempNom)=>{
     if(!caseSel)return;
-    const r=appliquerPosteCase(gardes,csbo,caseSel.key,caseSel.medId,choix);
+    const r=appliquerPosteCase(gardes,csbo,caseSel.key,caseSel.medId,choix,rempNom);
     setGardes(r.gardes);setCsbo(r.csbo);setCaseSel(null);
+    showToast("Planning mis à jour ✓");
+  };
+  const appliquerCaseRemp=(choix)=>{
+    if(!caseRemp)return;
+    const {key,rempId}=caseRemp;
+    const ng={...gardes}, nb={...bos};
+    if(choix==="garde"){ ng[key]=rempId; if(nb[key]===rempId) delete nb[key]; }
+    else if(choix==="bo"){ nb[key]=rempId; if(ng[key]===rempId) delete ng[key]; }
+    else { if(ng[key]===rempId) delete ng[key]; if(nb[key]===rempId) delete nb[key]; }
+    setGardes(ng);setBos(nb);setCaseRemp(null);
     showToast("Planning mis à jour ✓");
   };
 
@@ -1575,10 +1676,23 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
   // Colonnes = titulaires + remplaçants pré-placés (id dans MEDECINS ou dans remplacants)
   // Les remplaçants ponctuels (mis après génération via ModalGarde avec nomRemp) 
   // restent dans la colonne du titulaire remplacé → stockés comme { garde: medecinId, remplacement: nomRemp }
+  // Un remplaçant a une colonne s'il travaille ce mois-ci, ou si l'admin l'a ajoutée à la main pour ce mois
+  const moisCle=annee+"-"+String(moisActif+1).padStart(2,"0");
+  const travailleCeMois=r=>jours.some(j=>gardes[j.key]===r.id||bos[j.key]===r.id);
   const colonnes=[
     ...MEDECINS,
-    ...remplacants.filter(r=>jours.some(j=>gardes[j.key]===r.id||bos[j.key]===r.id))
+    ...remplacants.filter(r=>travailleCeMois(r)||(r.moisAffiches||[]).includes(moisCle))
   ];
+  const ajouterColonne=(rempId,nouveauNom)=>{
+    if(nouveauNom){
+      const id="remp_"+Date.now();
+      setRemplacants(prev=>[...prev,{id,nom:nouveauNom,moisAffiches:[moisCle]}]);
+    } else {
+      setRemplacants(prev=>prev.map(r=>r.id===rempId?{...r,moisAffiches:[...new Set([...(r.moisAffiches||[]),moisCle])]}:r));
+    }
+    setAjoutColonne(false);showToast("Colonne ajoutée ✓");
+  };
+  const retirerColonne=rempId=>setRemplacants(prev=>prev.map(r=>r.id===rempId?{...r,moisAffiches:(r.moisAffiches||[]).filter(x=>x!==moisCle)}:r));
 
   // Index: dateKey -> { titulaire: medecinId, remplacantNom: string } pour les remplacements ponctuels
   // On stocke dans gardes: "PONCTUEL:titulaireid:nomremp"
@@ -1684,6 +1798,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
           style={{display:"flex",alignItems:"center",gap:6,padding:"8px 14px",borderRadius:9,border:"1px solid #4f6ef7",background:"#eff2ff",color:"#4f6ef7",fontWeight:700,cursor:"pointer",fontSize:12}}>
           📄 Exporter PDF
         </button>
+        {isAdmin&&<button onClick={()=>setAjoutColonne(true)} style={{padding:"7px 12px",borderRadius:9,border:"1px solid #c4b5fd",background:"#f5f3ff",color:"#6d28d9",fontWeight:700,fontSize:12,cursor:"pointer",marginLeft:8}}>➕ Colonne remplaçant</button>}
       </div>
 
       {/* Légende */}
@@ -1694,7 +1809,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
             <span style={{fontSize:11,color:T.textSecondary,fontWeight:600}}>{l}</span>
           </div>
         ))}
-        {isAdmin&&<span style={{fontSize:10,color:T.textMuted,marginLeft:"auto"}}>✏️ Toucher une garde pour modifier</span>}
+        {isAdmin&&<span style={{fontSize:10,color:T.textMuted,marginLeft:"auto"}}>✏️ Toucher une case pour modifier</span>}
       </div>
 
       {/* Tableau scrollable */}
@@ -1720,8 +1835,11 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
                   const c=getCouleur(m.id);
                   return (
                     <div key={m.id} style={{width:colW,flexShrink:0,padding:"3px 2px",textAlign:"center",boxSizing:"border-box"}}>
-                      <div style={{background:c.bg,color:c.text,border:"1px solid "+c.border,borderRadius:6,padding:"3px 2px",fontSize:9,fontWeight:800,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                      <div style={{background:c.bg,color:c.text,border:"1px solid "+c.border,borderRadius:6,padding:"3px 2px",fontSize:9,fontWeight:800,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",position:"relative"}}>
                         {m.nom.slice(0,6)}
+                        {isAdmin&&!MEDECINS.some(x=>x.id===m.id)&&!travailleCeMois(m)&&(
+                          <span onClick={()=>retirerColonne(m.id)} title="Retirer la colonne" style={{position:"absolute",right:2,top:1,cursor:"pointer",color:"#b91c1c"}}>×</span>
+                        )}
                       </div>
                     </div>
                   );
@@ -1773,15 +1891,17 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
                       if(isGarde) cells.push({color:violation?"#f59e0b":"#f03e3e",label:isGardePonctuel?"🔄 "+(getRemplacement(j.key).remplacantNom.length>7?getRemplacement(j.key).remplacantNom.slice(0,7)+"…":getRemplacement(j.key).remplacantNom):"G",bg:violation?"#fffbeb":"#fff0f0",border:violation?"#fde68a":"#fca5a5",ponctuel:isGardePonctuel,violation});
                       if(isBosRemp) cells.push({color:"#4f6ef7",label:"BO",bg:"#eff2ff",border:"#a5b4fc"});
                       const veilleK=dk(new Date(date.getFullYear(),date.getMonth(),date.getDate()-1));
-                      const enRepos=tpJ&&gardes[veilleK]===m.id;
-                      if(tpJ) cells.push(enRepos?{...POSTE_AFFICHAGE[tpJ],border:"#f59e0b",note:"lendemain de garde"}:{...POSTE_AFFICHAGE[tpJ]});
+                      const rempPoste=tpJ?(csboJ._remp||{})[m.id]:null;
+                      const enRepos=tpJ&&!rempPoste&&gardes[veilleK]===m.id;
+                      if(tpJ) cells.push(rempPoste?{...POSTE_AFFICHAGE[tpJ],note:"🔄 "+(rempPoste.length>8?rempPoste.slice(0,8)+"…":rempPoste),ponctuel:true}
+                        :enRepos?{...POSTE_AFFICHAGE[tpJ],border:"#f59e0b",note:"lendemain de garde"}:{...POSTE_AFFICHAGE[tpJ]});
 
                       // Poste manquant pour ce jour (pas spécifique à un médecin — affiché dans 1ère colonne vide)
                       const manqueJ=csboJ._manque||[];
                       const borderR=mi<colonnes.length-1?"1px solid #eef0f8":"none";
                       const estTitulaire=MEDECINS.some(x=>x.id===m.id);
-                      const cliquable=isAdmin&&(estTitulaire||cells.length>0);
-                      const ouvrir=()=>{ if(!isAdmin)return; if(estTitulaire)setCaseSel({key:j.key,medId:m.id}); else if(cells.length>0)setModalDate(j.key); };
+                      const cliquable=isAdmin;
+                      const ouvrir=()=>{ if(!isAdmin)return; if(estTitulaire)setCaseSel({key:j.key,medId:m.id}); else setCaseRemp({key:j.key,rempId:m.id}); };
                       if(isIndispo&&cells.length===0){
                         const indT=indisposJ.get(m.id)||"jour";
                         const ti=typeIndispo(indT);
@@ -1826,7 +1946,9 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
         </div>
       </div>
 
-      {caseSel&&<ModalCase dateKey={caseSel.key} medecin={MEDECINS.find(x=>x.id===caseSel.medId)} gardes={gardes} csbo={csbo} indispos={indispos} contraintes={contraintes} periodes={periodes} annee={annee} onClose={()=>setCaseSel(null)} onApply={appliquerCase} onOpenRemplacant={()=>{const k=caseSel.key;setCaseSel(null);setModalDate(k);}}/>}
+      {caseSel&&<ModalCase dateKey={caseSel.key} medecin={MEDECINS.find(x=>x.id===caseSel.medId)} gardes={gardes} csbo={csbo} indispos={indispos} contraintes={contraintes} periodes={periodes} annee={annee} remplacants={remplacants} onClose={()=>setCaseSel(null)} onApply={appliquerCaseAvecRemp}/>}
+      {caseRemp&&<ModalCaseRemplacant dateKey={caseRemp.key} remp={remplacants.find(r=>r.id===caseRemp.rempId)||{id:caseRemp.rempId,nom:"Remplaçant"}} gardes={gardes} bos={bos} annee={annee} onClose={()=>setCaseRemp(null)} onApply={appliquerCaseRemp}/>}
+      {ajoutColonne&&<ModalAjoutColonne remplacants={remplacants} dejaAffiches={colonnes.map(c=>c.id)} mois={moisActif} annee={annee} onClose={()=>setAjoutColonne(false)} onChoisir={ajouterColonne}/>}
       {modalDate&&<ModalGarde dateKey={modalDate} gardeActuelle={gardes[modalDate]||""} onClose={()=>setModalDate(null)} onSave={handleSave} remplacants={remplacants} periodes={periodes} annee={annee} titulaireActuelId={(()=>{const g=gardes[modalDate];if(!g)return null;if(g.startsWith("PONCTUEL:")){return g.split(":")[1];}return g;})()}/>}
     </div>
   );
@@ -3545,7 +3667,7 @@ export default function App(){
             <p style={{fontSize:15,fontWeight:600,color:T.textSecondary,margin:"0 0 6px"}}>Aucun planning pour {annee}</p>
             <p style={{fontSize:13,margin:0}}>Allez dans <strong style={{color:T.teal}}>Périodes</strong> pour générer.</p>
           </div>
-          :<VuePlanning gardes={gardes} setGardes={setGardes} bos={bos} setBos={setBos} csbo={csbo} setCsbo={setCsbo} besoins={besoins} setStats={setStats} annee={annee} remplacants={remplacants} periodes={periodes} indispos={indispos} contraintes={contraintes} isAdmin={isAdmin} showToast={showToast}/>
+          :<VuePlanning gardes={gardes} setGardes={setGardes} bos={bos} setBos={setBos} csbo={csbo} setCsbo={setCsbo} besoins={besoins} setStats={setStats} annee={annee} remplacants={remplacants} setRemplacants={setRemplacants} periodes={periodes} indispos={indispos} contraintes={contraintes} isAdmin={isAdmin} showToast={showToast}/>
         )}
         {tab==="monplanning"&&<VueMonPlanning gardes={gardes} bos={bos} csbo={csbo} currentUser={user} annee={annee}/>}
         {tab==="besoins"&&<VueBesoins besoins={besoins} setBesoins={setBesoins} annee={annee} isAdmin={isAdmin}/>}
