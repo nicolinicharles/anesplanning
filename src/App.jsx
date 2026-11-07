@@ -171,7 +171,9 @@ function numSem(key){
   const d=dkToDate(key);d.setHours(0,0,0,0);d.setDate(d.getDate()+4-(d.getDay()||7));
   const debut=new Date(d.getFullYear(),0,1);return Math.ceil((((d-debut)/86400000)+1)/7);
 }
-function poids(key,ferie){ const js=dkToDate(key).getDay(); if(ferie)return 3; if([5,6,0].includes(js))return 2; return 1.5; }
+// Gardes fériées comme le tableau d'Oscar : férié = 2,5 ; grand férié = 3 (liste ci-dessous, format MM-JJ)
+const GRANDS_FERIES=["01-01","05-01","12-25"];
+function poids(key,ferie){ const js=dkToDate(key).getDay(); if(ferie)return GRANDS_FERIES.includes(key.slice(5))?3:2.5; if([5,6,0].includes(js))return 2; return 1.5; }
 function estIndispo(id,key,indispos){ return indispos.some(i=>i.medecinId===id&&key>=i.dateDebut&&key<=i.dateFin); }
 // Une indispo bloque toujours la garde ; seule une indispo "jour" (journée entière) bloque aussi le travail de jour (BO/CS).
 // Types d'indisponibilité
@@ -552,14 +554,31 @@ function retirerConflitsGarde(csbo, gardes, keys, lendemainAussi = true){
   return {csbo:nc, nb};
 }
 
-// Répartition du travail réel (hors jours des remplaçants), comme l'ancien roulement :
-// chacun a d'abord sa part calculée sur 6 ETP (1/6 pour un 100 %, 0,7/6 pour un 70 %…),
-// puis ce qui reste (6 − 5,3 = 0,7 ETP) est partagé à parts égales entre les médecins.
+// Répartition du travail, comme le tableau d'Oscar :
+// le total de référence comprend TOUTES les unités (titulaires + remplaçants payés par la société).
+// Chacun a sa part calculée sur 6 ETP (1/6 pour un 100 %, 0,7/6 pour un 70 %…),
+// puis ce qui reste aux titulaires une fois la part des remplaçants déduite (0,7 ETP − remplaçants)
+// est partagé à parts égales entre les médecins.
 const ETP_REFERENCE = 6;
-function cibleUnites(m, totalU, medecins) {
+function cibleUnites(m, totalU, medecins, uTitulaires = totalU) {
   const base = totalU * m.etp / ETP_REFERENCE;
-  const reste = totalU - medecins.reduce((s, x) => s + totalU * x.etp / ETP_REFERENCE, 0);
+  const reste = uTitulaires - medecins.reduce((s, x) => s + totalU * x.etp / ETP_REFERENCE, 0);
   return base + reste / medecins.length;
+}
+// Unités faites par les remplaçants payés par la société (gardes, BO journée, CS/BO) sur les jours donnés.
+// Les gardes « PONCTUEL » (remplaçant payé par le titulaire) restent comptées pour le titulaire.
+function unitesRemplacants(jours, gardes, bos, csbo, medecins) {
+  const estTitulaire = id => medecins.some(m => m.id === id);
+  let u = 0;
+  for (const j of jours) {
+    const g = gardes[j.key];
+    if (g && !String(g).startsWith("PONCTUEL:") && !estTitulaire(g)) u += poids(j.key, j.ferie);
+    const b = bos[j.key];
+    if (b && !estTitulaire(b)) u += 1;
+    const v = csbo[j.key];
+    if (v) SLOTS_CSBO.forEach(s => { if (v[s] && !estTitulaire(v[s])) u += SLOT_INFO[s].u; });
+  }
+  return u;
 }
 
 // Nombre max de CS/BO la semaine d'un pack ven+dim (et la semaine suivante)
@@ -1375,15 +1394,6 @@ const STYLE_SOCIETE={
 };
 const LIB_SOCIETE={cs:"CS",bo:"BO",bom:"BO MATIN",bocs:"BO/CS"};
 
-// Vacances scolaires zone A (académie de Lyon), d'après le calendrier officiel (service-public.gouv.fr).
-// Du lundi suivant le début des vacances jusqu'à la veille de la reprise.
-const VACANCES_ZONE_A=[
-  ["2026-10-19","2026-11-01"],["2026-12-21","2027-01-03"],["2027-02-15","2027-02-28"],["2027-04-12","2027-04-25"],
-  ["2027-07-05","2027-09-01"],["2027-10-25","2027-11-07"],["2027-12-20","2028-01-02"],["2028-02-21","2028-03-05"],
-  ["2028-04-24","2028-05-08"],["2028-07-04","2028-08-31"],
-];
-const estVacancesScolaires=k=>VACANCES_ZONE_A.some(([d,f])=>k>=d&&k<=f);
-
 // Construit les lignes du mois : pour chaque jour, 7 médecins + Remplaçant 1, 2, 3
 function lignesExportMois({annee,mois,gardes,csbo,bos,indispos,remplacants,manquesDuJour}){
   const feries=joursFeries(annee), dern=new Date(annee,mois+1,0).getDate(), lignes=[];
@@ -1407,9 +1417,7 @@ function lignesExportMois({annee,mois,gardes,csbo,bos,indispos,remplacants,manqu
     if(bos[k])r1.push({t:"BO",suffixe:" "+nomRemp(bos[k]).toUpperCase(),vert:true});
     // Remplaçant 2 : postes non attribués
     const r2=(manquesDuJour(k)||[]).map(m=>({t:m.replace("BO½","BO MATIN").toUpperCase(),suffixe:""}));
-    const vac=estVacancesScolaires(k);
-    const colA=js===1?String(numSem(k)):(vac?"VAC SCO":"");
-    lignes.push({date,gris,vac,colA,cases:[...cases,r1,r2,[]]});
+    lignes.push({date,gris,cases:[...cases,r1,r2,[]]});
   }
   return lignes;
 }
@@ -1432,11 +1440,10 @@ function htmlExportMois(lignes,{avecEntetes,annee,mois}){
   let h='<table style="border-collapse:collapse">';
   if(avecEntetes){
     const th=(t,bg)=>'<th style="border:1px solid #000;background:'+bg+';font-family:Arial;font-size:9pt;font-weight:bold;">'+t+'</th>';
-    h+='<tr><td></td>'+th(MOIS[mois].toUpperCase()+" "+annee,"#8e7cc3")+COLONNES_SOCIETE.map(c=>th(c.nom,"#8e7cc3")).join("")+th("Remplaçant 1","#ea9999")+th("Remplaçant 2","#ea9999")+th("Remplaçant 3","#ea9999")+'</tr>';
+    h+='<tr>'+th(MOIS[mois].toUpperCase()+" "+annee,"#8e7cc3")+COLONNES_SOCIETE.map(c=>th(c.nom,"#8e7cc3")).join("")+th("Remplaçant 1","#ea9999")+th("Remplaçant 2","#ea9999")+th("Remplaçant 3","#ea9999")+'</tr>';
   }
   for(const l of lignes){
     h+='<tr>';
-    if(avecEntetes)h+='<td style="text-align:right;font-family:Arial;font-size:9pt;font-style:italic;color:#1c4587;'+(l.vac?"background:#a4c2f4;":"")+'">'+l.colA+'</td>';
     if(avecEntetes)h+='<td style="border:1px solid #000;text-align:right;font-family:Arial;font-size:9pt;background:'+(l.gris?"#a6a6a6":"#ffffff")+';">'+l.date.getDate()+" "+MOIS[l.date.getMonth()].toLowerCase()+'</td>';
     h+=l.cases.map(c=>td(c,l.gris)).join("")+'</tr>';
   }
@@ -1444,7 +1451,7 @@ function htmlExportMois(lignes,{avecEntetes,annee,mois}){
 }
 function texteExportMois(lignes,{annee,mois}){
   const entete=[MOIS[mois].toUpperCase()+" "+annee,...COLONNES_SOCIETE.map(c=>c.nom),"Remplaçant 1","Remplaçant 2","Remplaçant 3"].join("\t");
-  return ["\t"+entete,...lignes.map(l=>[l.colA,l.date.getDate()+" "+MOIS[l.date.getMonth()].toLowerCase(),...l.cases.map(c=>c.map(m=>m.t+m.suffixe).join(" + "))].join("\t"))].join("\n");
+  return [entete,...lignes.map(l=>[l.date.getDate()+" "+MOIS[l.date.getMonth()].toLowerCase(),...l.cases.map(c=>c.map(m=>m.t+m.suffixe).join(" + "))].join("\t"))].join("\n");
 }
 
 // Case d'une colonne de remplaçant : ses jours sont payés par la société
@@ -1797,7 +1804,7 @@ function VuePlanning({gardes,setGardes,bos,setBos,csbo,setCsbo,besoins,setStats,
       const r=document.createRange();r.selectNodeContents(div);const sel=window.getSelection();sel.removeAllRanges();sel.addRange(r);
       document.execCommand("copy");sel.removeAllRanges();document.body.removeChild(div);
     }
-    showToast("Copié ✓ — colle en A2 (à gauche de « AVRIL 2027 »)");
+    showToast("Copié ✓ — colle sur la case du mois (ex. « AVRIL 2027 », colonne B)");
   };
   const telechargerExcel=()=>{
     const l=lignesExport();
@@ -3061,7 +3068,7 @@ function VueBesoins({ besoins, setBesoins, annee, isAdmin }) {
 // ── ÉQUITÉ ─────────────────────────────────────────────────────────────────────
 
 
-function VueEquite({gardes,bos,csbo,annee,periodes=[]}){
+function VueEquite({gardes,bos,csbo,annee,periodes=[],remplacants=[],besoins={}}){
   const ja=useMemo(()=>tousJours(annee),[annee]);
   const [vue,setVue]=useState("gardes"); // gardes | cs | bo | unites
 
@@ -3107,6 +3114,50 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[]}){
   const nbMois=nbMoisPeriodes>0?nbMoisPeriodes:joursCouverts/(ja.length/12);
   // Travail réel des titulaires (les jours des remplaçants payés par la société ne comptent pas)
   const totalEtp=MEDECINS.reduce((s,m)=>s+m.etp,0);           // 5,3
+  // Comme le tableau d'Oscar : la base de calcul comprend aussi le travail des remplaçants (société)
+  const ur=unitesRemplacants(ja,gardes,bos,csbo,MEDECINS);
+  // Postes non attribués (besoins des périodes restés vides) : comptés dans le total,
+  // comme la colonne « Rempla 2 » du tableau d'Oscar (c'est là qu'ils arrivent à l'export)
+  const statsNA=(()=>{
+    const r={id:"_na",nom:"Non attribués",gardes:0,semaine:0,vendDim:0,samedi:0,cs:0,bo:0,unites:0};
+    const dansP=key=>periodes.some(p=>(p.annee===undefined||p.annee===annee)&&key>=p.debut&&key<=p.fin);
+    for(const j of ja){
+      if(!dansP(j.key))continue;
+      const b=getBesoinEffectif(j.key,besoins,annee),v=csbo[j.key]||{};
+      if(b.garde&&!gardes[j.key]){
+        r.gardes++;r.unites+=poids(j.key,j.ferie);
+        const js=dkToDate(j.key).getDay();
+        if([1,2,3,4].includes(js))r.semaine++;if(js===5)r.vendDim++;if(js===6)r.samedi++;
+      }
+      const nCS=Math.max(0,(b.cs1?1:0)+(b.cs2?1:0)-["cs1","cs2"].filter(s=>v[s]).length);
+      const nBO=Math.max(0,(b.bo1?1:0)+(b.bo2?1:0)+(b.bo3?1:0)-["bo1","bo2","bo3"].filter(s=>v[s]).length-(bos[j.key]?1:0));
+      r.cs+=nCS;r.unites+=nCS;r.bo+=nBO;r.unites+=nBO;
+      if(b.bom&&!v.bom){r.bo+=0.5;r.unites+=0.5;}
+      if(b.bocs&&!v.bocs){r.cs+=0.5;r.bo+=0.5;r.unites+=1;}
+    }
+    return r;
+  })();
+  const una=statsNA.unites;
+  // Une ligne par remplaçant de la société (ex. Élodia), comme la colonne « Rempla » du tableau d'Oscar
+  const statsRemp=(()=>{
+    const estTit=id=>MEDECINS.some(m=>m.id===id);
+    const par={};
+    const get=id=>par[id]||(par[id]={id,nom:(remplacants.find(r=>r.id===id)||{}).nom||"Remplaçant",gardes:0,semaine:0,vendDim:0,samedi:0,cs:0,bo:0,unites:0});
+    for(const j of ja){
+      const g=gardes[j.key];
+      if(g&&!String(g).startsWith("PONCTUEL:")&&!estTit(g)){
+        const r=get(g);r.gardes++;r.unites+=poids(j.key,j.ferie);
+        const js=dkToDate(j.key).getDay();
+        if([1,2,3,4].includes(js))r.semaine++;if(js===5)r.vendDim++;if(js===6)r.samedi++;
+      }
+      const b=bos[j.key];
+      if(b&&!estTit(b)){const r=get(b);r.bo++;r.unites+=1;}
+      const v=csbo[j.key];
+      if(v)SLOTS_CSBO.forEach(s=>{if(v[s]&&!estTit(v[s])){const r=get(v[s]);const i=SLOT_INFO[s];r.cs+=i.cs;r.bo+=i.bo;r.unites+=i.u;}});
+    }
+    return Object.values(par).sort((a,b)=>b.unites-a.unites);
+  })();
+  // Total de référence = travail des titulaires seuls (Élodia et non attribués affichés à part)
   const part100_6=tu/ETP_REFERENCE;                             // un 100 % sur 6 ETP
   const part100_53=totalEtp>0?tu/totalEtp:0;                    // un 100 % sur 5,3 ETP
   const resteEgal=(tu-tu*totalEtp/ETP_REFERENCE)/MEDECINS.length; // part égale des 0,7 ETP restants
@@ -3114,6 +3165,10 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[]}){
   const ecartDe=m=>m.unites-objectif(m);
   const reel6=m=>part100_6>0?m.unites/part100_6*100:0;
   const reel53=m=>part100_53>0?m.unites/part100_53*100:0;
+  // Variantes sur 6 ETP pour comparer : + remplaçants (Élodia), puis + remplaçants + non attribués (= tableau d'Oscar)
+  const part6R=(tu+ur)/ETP_REFERENCE, part6RN=(tu+ur+una)/ETP_REFERENCE;
+  const reel6R=m=>part6R>0?m.unites/part6R*100:0;
+  const reel6RN=m=>part6RN>0?m.unites/part6RN*100:0;
   const couleurEcart=ec=>Math.abs(ec)<1.5?"#00b86b":ec<0?"#f59e0b":"#f03e3e";
 
   // Catégories affichables
@@ -3191,7 +3246,8 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[]}){
 
       {/* Objectif */}
       <div style={{background:"rgba(14,165,233,0.05)",border:"1px solid rgba(14,165,233,0.2)",borderRadius:12,padding:"10px 14px",marginBottom:12,fontSize:12,color:T.textSecondary,lineHeight:1.6}}>
-        <strong style={{color:T.textPrimary}}>Travail des titulaires :</strong> {fmtU(tu)} unités (hors remplaçants payés par la société)<br/>
+        <strong style={{color:T.textPrimary}}>Travail des titulaires :</strong> {fmtU(tu)} unités · remplaçants (société) {fmtU(ur)} · non attribués {fmtU(una)}<br/>
+        6 ETP titu. = sur {fmtU(tu)} · 6 ETP +rempl. = sur {fmtU(tu+ur)} · 6 ETP +rempl. +non attr. = sur {fmtU(tu+ur+una)} (calcul du tableau d'Oscar)<br/>
         Part d'un 100 % : <strong style={{color:T.textPrimary}}>{fmtU(part100_6)}</strong> sur 6 ETP · <strong style={{color:T.textPrimary}}>{fmtU(part100_53)}</strong> sur 5,3 ETP<br/>
         Objectif = part sur 6 ETP + <strong style={{color:T.textPrimary}}>{fmtU(resteEgal)}</strong> chacun (les 0,7 ETP restants à parts égales) · Écart = unités − objectif
       </div>
@@ -3203,7 +3259,7 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[]}){
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
             <thead>
               <tr style={{background:"#f8faff"}}>
-                {["Médecin","G","Sem","V/D","Sam","CS","BO","Unités","Objectif","Écart","Réel 6 ETP","Réel 5,3 ETP"].map(h=>(
+                {["Médecin","G","Sem","V/D","Sam","CS","BO","Unités","Objectif","Écart","6 ETP titu.","6 ETP +rempl.","6 ETP +rempl. +non attr.","Réel 5,3 ETP"].map(h=>(
                   <th key={h} style={{padding:"8px 6px",textAlign:"center",fontWeight:700,color:T.textMuted,borderBottom:"1px solid "+T.border,whiteSpace:"nowrap",fontSize:10}}>{h}</th>
                 ))}
               </tr>
@@ -3228,8 +3284,30 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[]}){
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:11,color:T.textPrimary}}>{m.unites.toFixed(1)}</td>
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:600,fontSize:11,color:T.textMuted}}>{objectif(m).toFixed(1)}</td>
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:800,fontSize:11,color:ecColor}}>{ec>0?"+":""}{ec.toFixed(1)}</td>
-                    <td style={{padding:"8px 6px",textAlign:"center",fontWeight:800,fontSize:11,color:coulReel(r6),whiteSpace:"nowrap"}}>{Math.round(r6)} %<div style={{fontSize:8,fontWeight:500,color:T.textMuted}}>prévu {prevu} %</div></td>
+                    {[r6,reel6R(m),reel6RN(m)].map((r,k)=>(
+                      <td key={"r6"+k} style={{padding:"8px 6px",textAlign:"center",fontWeight:800,fontSize:11,color:coulReel(r),whiteSpace:"nowrap"}}>{Math.round(r)} %<div style={{fontSize:8,fontWeight:500,color:T.textMuted}}>prévu {prevu} %</div></td>
+                    ))}
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:800,fontSize:11,color:coulReel(r53),whiteSpace:"nowrap"}}>{Math.round(r53)} %<div style={{fontSize:8,fontWeight:500,color:T.textMuted}}>prévu {prevu} %</div></td>
+                  </tr>
+                );
+              })}
+              {[...statsRemp,...(statsNA.unites>0?[statsNA]:[])].map(r=>{
+                const na=r.id==="_na";
+                return (
+                  <tr key={r.id} style={{borderTop:"1px solid "+T.border,background:na?"#fff7ed":"#f5f3ff"}}>
+                    <td style={{padding:"8px 6px",textAlign:"center"}}>
+                      <span style={{background:na?"#ffedd5":"#ede9fe",color:na?"#c2410c":"#6d28d9",border:"1px solid "+(na?"#fdba74":"#c4b5fd"),borderRadius:5,padding:"1px 6px",fontWeight:700,fontSize:10,whiteSpace:"nowrap"}}>{na?"Non attrib.":r.nom.slice(0,8)}</span>
+                    </td>
+                    {[r.gardes,r.semaine,r.vendDim,r.samedi,r.cs,r.bo].map((v,j)=>(
+                      <td key={j} style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:v===0?T.textMuted:T.textSecondary}}>{fmtU(v)}</td>
+                    ))}
+                    <td style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:11,color:T.textPrimary}}>{r.unites.toFixed(1)}</td>
+                    <td style={{padding:"8px 6px",textAlign:"center",color:T.textMuted}}>—</td>
+                    <td style={{padding:"8px 6px",textAlign:"center",color:T.textMuted}}>—</td>
+                    {[reel6(r),reel6R(r),reel6RN(r)].map((x,k)=>(
+                      <td key={"r6"+k} style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:11,color:T.textSecondary}}>{Math.round(x)} %</td>
+                    ))}
+                    <td style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:11,color:T.textSecondary}}>{Math.round(reel53(r))} %</td>
                   </tr>
                 );
               })}
@@ -3792,7 +3870,7 @@ export default function App(){
         {tab==="monplanning"&&<VueMonPlanning gardes={gardes} bos={bos} csbo={csbo} currentUser={user} annee={annee}/>}
         {tab==="besoins"&&<VueBesoins besoins={besoins} setBesoins={setBesoins} annee={annee} isAdmin={isAdmin}/>}
         {tab==="echanges"&&<VueEchanges echanges={echanges} setEchanges={setEchanges} gardes={gardes} setGardes={setGardes} csbo={csbo} setCsbo={setCsbo} bos={bos} setBos={setBos} currentUser={user} annee={annee} showToast={showToast}/>}
-        {tab==="equite"&&<VueEquite gardes={gardes} bos={bos} csbo={csbo} annee={annee} periodes={periodes}/>}
+        {tab==="equite"&&<VueEquite gardes={gardes} bos={bos} csbo={csbo} annee={annee} periodes={periodes} remplacants={remplacants} besoins={besoins}/>}
         {tab==="indispos"&&<VueIndispos indispos={indispos} setIndispos={setIndispos} currentUser={user} annee={annee}/>}
         {tab==="remplacants"&&<VueRemplacants remplacants={remplacants} setRemplacants={setRemplacants} gardes={gardes} setGardes={setGardes} bos={bos} setBos={setBos} csbo={csbo} setCsbo={setCsbo} annee={annee} showToast={showToast} isAdmin={isAdmin}/>}
         {tab==="contraintes"&&<VueContraintes contraintes={contraintes} setContraintes={setContraintes} currentUser={user}/>}
