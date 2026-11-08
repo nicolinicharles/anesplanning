@@ -171,9 +171,20 @@ function numSem(key){
   const d=dkToDate(key);d.setHours(0,0,0,0);d.setDate(d.getDate()+4-(d.getDay()||7));
   const debut=new Date(d.getFullYear(),0,1);return Math.ceil((((d-debut)/86400000)+1)/7);
 }
-// Gardes fériées comme le tableau d'Oscar : férié = 2,5 ; grand férié = 3 (liste ci-dessous, format MM-JJ)
-const GRANDS_FERIES=["01-01","05-01","12-25"];
-function poids(key,ferie){ const js=dkToDate(key).getDay(); if(ferie)return GRANDS_FERIES.includes(key.slice(5))?3:2.5; if([5,6,0].includes(js))return 2; return 1.5; }
+// Valeur d'une garde en unités :
+// 24, 25, 31 décembre et 1er janvier = 3 · autre jour férié = 2,5 · vendredi, samedi, dimanche = 2 · semaine = 1,5
+// (BO, CS, BO/CS = 1 ; BO matin = 0,5 : voir SLOT_INFO)
+const GRANDS_FERIES=["12-24","12-25","12-31","01-01"];
+function poids(key,ferie){ const js=dkToDate(key).getDay(); if(GRANDS_FERIES.includes(key.slice(5)))return 3; if(ferie)return 2.5; if([5,6,0].includes(js))return 2; return 1.5; }
+// Catégorie d'une garde, pour le détail du tableau d'Équité (même règle que poids)
+function typeGarde(key,ferie){ const js=dkToDate(key).getDay(); if(GRANDS_FERIES.includes(key.slice(5)))return "gFp"; if(ferie)return "gFer"; if(js===5)return "gVen"; if(js===6)return "gSam"; if(js===0)return "gDim"; return "gSem"; }
+const DETAIL0=()=>({gSem:0,gVen:0,gSam:0,gDim:0,gFer:0,gFp:0,bo:0,cs:0,bocs:0,bom:0});
+// Colonnes du détail : [clé, libellé, valeur en unités, couleur]
+const COLS_DETAIL=[
+  ["gSem","G sem","1,5","#f03e3e"],["gVen","G ven","2","#e8590c"],["gSam","G sam","2","#f59e0b"],["gDim","G dim","2","#d97706"],
+  ["gFer","G férié","2,5","#be185d"],["gFp","G 24-25-31/12 + 1/1","3","#7c2d12"],
+  ["bo","BO","1","#4f6ef7"],["cs","CS","1","#00b86b"],["bocs","BO/CS","1","#7c3aed"],["bom","BO matin","0,5","#0891b2"],
+];
 function estIndispo(id,key,indispos){ return indispos.some(i=>i.medecinId===id&&key>=i.dateDebut&&key<=i.dateFin); }
 // Une indispo bloque toujours la garde ; seule une indispo "jour" (journée entière) bloque aussi le travail de jour (BO/CS).
 // Types d'indisponibilité
@@ -3074,23 +3085,23 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[],remplacants=[],besoins={}}
 
   const stats=useMemo(()=>{
     return MEDECINS.map(m=>{
-      let gardeCount=0,semaine=0,vendDim=0,samedi=0,cs=0,bo=0,unites=0;
+      let gardeCount=0,semaine=0,vendDim=0,samedi=0,cs=0,bo=0,unites=0;const d=DETAIL0();
       for(const j of ja){
         const g=gardes[j.key];
         const gardeReel=g&&g.startsWith("PONCTUEL:")?g.split(":")[1]:g;
         if(gardeReel===m.id){
-          gardeCount++;unites+=poids(j.key,j.ferie);
+          gardeCount++;unites+=poids(j.key,j.ferie);d[typeGarde(j.key,j.ferie)]++;
           const js=dkToDate(j.key).getDay();
           if([1,2,3,4].includes(js))semaine++;
           if(js===5)vendDim++;
           if(js===6)samedi++;
         }
-        if(bos[j.key]===m.id){bo++;unites+=1;}
+        if(bos[j.key]===m.id){bo++;unites+=1;d.bo++;}
         const v=csbo[j.key]||{};
         const sl=slotDuMedecin(v,m.id);
-        if(sl){const i=SLOT_INFO[sl];cs+=i.cs;bo+=i.bo;unites+=i.u;}
+        if(sl){const i=SLOT_INFO[sl];cs+=i.cs;bo+=i.bo;unites+=i.u;d[i.type]++;}
       }
-      return{...m,gardes:gardeCount,semaine,vendDim,samedi,cs,bo,unites};
+      return{...m,gardes:gardeCount,semaine,vendDim,samedi,cs,bo,unites,d};
     });
   },[ja,gardes,bos,csbo]);
 
@@ -3119,21 +3130,21 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[],remplacants=[],besoins={}}
   // Postes non attribués (besoins des périodes restés vides) : comptés dans le total,
   // comme la colonne « Rempla 2 » du tableau d'Oscar (c'est là qu'ils arrivent à l'export)
   const statsNA=(()=>{
-    const r={id:"_na",nom:"Non attribués",gardes:0,semaine:0,vendDim:0,samedi:0,cs:0,bo:0,unites:0};
+    const r={id:"_na",nom:"Non attribués",gardes:0,semaine:0,vendDim:0,samedi:0,cs:0,bo:0,unites:0,d:DETAIL0()};
     const dansP=key=>periodes.some(p=>(p.annee===undefined||p.annee===annee)&&key>=p.debut&&key<=p.fin);
     for(const j of ja){
       if(!dansP(j.key))continue;
       const b=getBesoinEffectif(j.key,besoins,annee),v=csbo[j.key]||{};
       if(b.garde&&!gardes[j.key]){
-        r.gardes++;r.unites+=poids(j.key,j.ferie);
+        r.gardes++;r.unites+=poids(j.key,j.ferie);r.d[typeGarde(j.key,j.ferie)]++;
         const js=dkToDate(j.key).getDay();
         if([1,2,3,4].includes(js))r.semaine++;if(js===5)r.vendDim++;if(js===6)r.samedi++;
       }
       const nCS=Math.max(0,(b.cs1?1:0)+(b.cs2?1:0)-["cs1","cs2"].filter(s=>v[s]).length);
       const nBO=Math.max(0,(b.bo1?1:0)+(b.bo2?1:0)+(b.bo3?1:0)-["bo1","bo2","bo3"].filter(s=>v[s]).length-(bos[j.key]?1:0));
-      r.cs+=nCS;r.unites+=nCS;r.bo+=nBO;r.unites+=nBO;
-      if(b.bom&&!v.bom){r.bo+=0.5;r.unites+=0.5;}
-      if(b.bocs&&!v.bocs){r.cs+=0.5;r.bo+=0.5;r.unites+=1;}
+      r.cs+=nCS;r.unites+=nCS;r.bo+=nBO;r.unites+=nBO;r.d.cs+=nCS;r.d.bo+=nBO;
+      if(b.bom&&!v.bom){r.bo+=0.5;r.unites+=0.5;r.d.bom++;}
+      if(b.bocs&&!v.bocs){r.cs+=0.5;r.bo+=0.5;r.unites+=1;r.d.bocs++;}
     }
     return r;
   })();
@@ -3142,18 +3153,18 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[],remplacants=[],besoins={}}
   const statsRemp=(()=>{
     const estTit=id=>MEDECINS.some(m=>m.id===id);
     const par={};
-    const get=id=>par[id]||(par[id]={id,nom:(remplacants.find(r=>r.id===id)||{}).nom||"Remplaçant",gardes:0,semaine:0,vendDim:0,samedi:0,cs:0,bo:0,unites:0});
+    const get=id=>par[id]||(par[id]={id,nom:(remplacants.find(r=>r.id===id)||{}).nom||"Remplaçant",gardes:0,semaine:0,vendDim:0,samedi:0,cs:0,bo:0,unites:0,d:DETAIL0()});
     for(const j of ja){
       const g=gardes[j.key];
       if(g&&!String(g).startsWith("PONCTUEL:")&&!estTit(g)){
-        const r=get(g);r.gardes++;r.unites+=poids(j.key,j.ferie);
+        const r=get(g);r.gardes++;r.unites+=poids(j.key,j.ferie);r.d[typeGarde(j.key,j.ferie)]++;
         const js=dkToDate(j.key).getDay();
         if([1,2,3,4].includes(js))r.semaine++;if(js===5)r.vendDim++;if(js===6)r.samedi++;
       }
       const b=bos[j.key];
-      if(b&&!estTit(b)){const r=get(b);r.bo++;r.unites+=1;}
+      if(b&&!estTit(b)){const r=get(b);r.bo++;r.unites+=1;r.d.bo++;}
       const v=csbo[j.key];
-      if(v)SLOTS_CSBO.forEach(s=>{if(v[s]&&!estTit(v[s])){const r=get(v[s]);const i=SLOT_INFO[s];r.cs+=i.cs;r.bo+=i.bo;r.unites+=i.u;}});
+      if(v)SLOTS_CSBO.forEach(s=>{if(v[s]&&!estTit(v[s])){const r=get(v[s]);const i=SLOT_INFO[s];r.cs+=i.cs;r.bo+=i.bo;r.unites+=i.u;r.d[i.type]++;}});
     }
     return Object.values(par).sort((a,b)=>b.unites-a.unites);
   })();
@@ -3258,8 +3269,8 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[],remplacants=[],besoins={}}
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
             <thead>
               <tr style={{background:"#f8faff"}}>
-                {["Médecin","G","Sem","V/D","Sam","CS","BO","Unités","Objectif","Écart","6 ETP +rempl.","6 ETP +rempl. +non attr.","Réel 5,3 ETP"].map(h=>(
-                  <th key={h} style={{padding:"8px 6px",textAlign:"center",fontWeight:700,color:T.textMuted,borderBottom:"1px solid "+T.border,whiteSpace:"nowrap",fontSize:10}}>{h}</th>
+                {[["Médecin"],["Gardes","total"],...COLS_DETAIL.map(c=>[c[1],c[2]+" u"]),["Unités"],["Objectif"],["Écart"],["6 ETP +rempl."],["6 ETP +rempl. +non attr."],["Réel 5,3 ETP"]].map(([h,sub])=>(
+                  <th key={h} style={{padding:"8px 6px",textAlign:"center",fontWeight:700,color:T.textMuted,borderBottom:"1px solid "+T.border,whiteSpace:"nowrap",fontSize:10}}>{h}{sub&&<div style={{fontSize:8,fontWeight:500}}>{sub}</div>}</th>
                 ))}
               </tr>
             </thead>
@@ -3275,10 +3286,9 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[],remplacants=[],besoins={}}
                     <td style={{padding:"8px 6px",textAlign:"center"}}>
                       <span style={{background:c.bg,color:c.text,border:"1px solid "+c.border,borderRadius:5,padding:"1px 6px",fontWeight:700,fontSize:10}}>{m.nom.slice(0,6)}</span>
                     </td>
-                    {[m.gardes,m.semaine,m.vendDim,m.samedi,m.cs,m.bo].map((v,j)=>(
-                      <td key={j} style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:v===0?T.textMuted:[
-                        "#f03e3e","#6366f1","#8b5cf6","#f59e0b","#00b86b","#4f6ef7"
-                      ][j]}}>{v}</td>
+                    <td style={{padding:"8px 6px",textAlign:"center",fontWeight:800,fontSize:12,color:m.gardes===0?T.textMuted:"#f03e3e"}}>{m.gardes}</td>
+                    {COLS_DETAIL.map(([k,,,col])=>(
+                      <td key={k} style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:m.d[k]===0?T.textMuted:col}}>{m.d[k]}</td>
                     ))}
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:11,color:T.textPrimary}}>{m.unites.toFixed(1)}</td>
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:600,fontSize:11,color:T.textMuted}}>{objectif(m).toFixed(1)}</td>
@@ -3297,8 +3307,9 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[],remplacants=[],besoins={}}
                     <td style={{padding:"8px 6px",textAlign:"center"}}>
                       <span style={{background:na?"#ffedd5":"#ede9fe",color:na?"#c2410c":"#6d28d9",border:"1px solid "+(na?"#fdba74":"#c4b5fd"),borderRadius:5,padding:"1px 6px",fontWeight:700,fontSize:10,whiteSpace:"nowrap"}}>{na?"Non attrib.":r.nom.slice(0,8)}</span>
                     </td>
-                    {[r.gardes,r.semaine,r.vendDim,r.samedi,r.cs,r.bo].map((v,j)=>(
-                      <td key={j} style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:v===0?T.textMuted:T.textSecondary}}>{fmtU(v)}</td>
+                    <td style={{padding:"8px 6px",textAlign:"center",fontWeight:800,fontSize:12,color:r.gardes===0?T.textMuted:T.textSecondary}}>{r.gardes}</td>
+                    {COLS_DETAIL.map(([k])=>(
+                      <td key={k} style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:r.d[k]===0?T.textMuted:T.textSecondary}}>{r.d[k]}</td>
                     ))}
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:11,color:T.textPrimary}}>{r.unites.toFixed(1)}</td>
                     <td style={{padding:"8px 6px",textAlign:"center",color:T.textMuted}}>—</td>
