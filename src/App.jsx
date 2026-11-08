@@ -554,16 +554,16 @@ function retirerConflitsGarde(csbo, gardes, keys, lendemainAussi = true){
   return {csbo:nc, nb};
 }
 
-// Répartition du travail, comme le tableau d'Oscar :
-// le total de référence comprend TOUTES les unités (titulaires + remplaçants payés par la société).
-// Chacun a sa part calculée sur 6 ETP (1/6 pour un 100 %, 0,7/6 pour un 70 %…),
-// puis ce qui reste aux titulaires une fois la part des remplaçants déduite (0,7 ETP − remplaçants)
-// est partagé à parts égales entre les médecins.
+// Répartition du travail AU PRORATA DU CONTRAT :
+// chacun a sa part sur 6 ETP (Élodia comprise dans le total), puis ce que les remplaçants n'ont pas
+// couvert des 0,7 ETP est partagé au prorata du contrat (et non plus à parts égales).
+// Mathématiquement, cela revient exactement à : travail des titulaires × contrat ÷ 5,3.
+// Ainsi tout le monde dépasse (ou non) son contrat dans la même proportion
+// (ex. temps plein à 103 % sur 6 ETP → 70 % à 72,1 % → 50 % à 51,5 %).
 const ETP_REFERENCE = 6;
-function cibleUnites(m, totalU, medecins, uTitulaires = totalU) {
-  const base = totalU * m.etp / ETP_REFERENCE;
-  const reste = uTitulaires - medecins.reduce((s, x) => s + totalU * x.etp / ETP_REFERENCE, 0);
-  return base + reste / medecins.length;
+function cibleUnites(m, totalU, medecins) {
+  const totalEtp = medecins.reduce((s, x) => s + x.etp, 0);
+  return totalEtp > 0 ? totalU * m.etp / totalEtp : 0;
 }
 // Unités faites par les remplaçants payés par la société (gardes, BO journée, CS/BO) sur les jours donnés.
 // Les gardes « PONCTUEL » (remplaçant payé par le titulaire) restent comptées pour le titulaire.
@@ -3160,7 +3160,6 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[],remplacants=[],besoins={}}
   // Total de référence = travail des titulaires seuls (Élodia et non attribués affichés à part)
   const part100_6=tu/ETP_REFERENCE;                             // un 100 % sur 6 ETP
   const part100_53=totalEtp>0?tu/totalEtp:0;                    // un 100 % sur 5,3 ETP
-  const resteEgal=(tu-tu*totalEtp/ETP_REFERENCE)/MEDECINS.length; // part égale des 0,7 ETP restants
   const objectif=m=>cibleUnites(m,tu,MEDECINS);
   const ecartDe=m=>m.unites-objectif(m);
   const reel6=m=>part100_6>0?m.unites/part100_6*100:0;
@@ -3247,9 +3246,9 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[],remplacants=[],besoins={}}
       {/* Objectif */}
       <div style={{background:"rgba(14,165,233,0.05)",border:"1px solid rgba(14,165,233,0.2)",borderRadius:12,padding:"10px 14px",marginBottom:12,fontSize:12,color:T.textSecondary,lineHeight:1.6}}>
         <strong style={{color:T.textPrimary}}>Travail des titulaires :</strong> {fmtU(tu)} unités · remplaçants (société) {fmtU(ur)} · non attribués {fmtU(una)}<br/>
-        6 ETP titu. = sur {fmtU(tu)} · 6 ETP +rempl. = sur {fmtU(tu+ur)} · 6 ETP +rempl. +non attr. = sur {fmtU(tu+ur+una)} (calcul du tableau d'Oscar)<br/>
-        Part d'un 100 % : <strong style={{color:T.textPrimary}}>{fmtU(part100_6)}</strong> sur 6 ETP · <strong style={{color:T.textPrimary}}>{fmtU(part100_53)}</strong> sur 5,3 ETP<br/>
-        Objectif = part sur 6 ETP + <strong style={{color:T.textPrimary}}>{fmtU(resteEgal)}</strong> chacun (les 0,7 ETP restants à parts égales) · Écart = unités − objectif
+        6 ETP +rempl. = sur {fmtU(tu+ur)} · 6 ETP +rempl. +non attr. = sur {fmtU(tu+ur+una)} (calcul du tableau d'Oscar) · les deux se rejoignent quand tous les jours non attribués sont faits ou annulés<br/>
+        Part d'un 100 % : <strong style={{color:T.textPrimary}}>{fmtU(part6R)}</strong> sur 6 ETP (Élodia comprise) · <strong style={{color:T.textPrimary}}>{fmtU(part100_53)}</strong> sur 5,3 ETP (titulaires)<br/>
+        Objectif = travail des titulaires × contrat ÷ 5,3 (<strong style={{color:T.textPrimary}}>au prorata du contrat</strong> : chacun dépasse son contrat dans la même proportion) · Écart = unités − objectif
       </div>
 
       {/* Tableau récap complet */}
@@ -3259,7 +3258,7 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[],remplacants=[],besoins={}}
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
             <thead>
               <tr style={{background:"#f8faff"}}>
-                {["Médecin","G","Sem","V/D","Sam","CS","BO","Unités","Objectif","Écart","6 ETP titu.","6 ETP +rempl.","6 ETP +rempl. +non attr.","Réel 5,3 ETP"].map(h=>(
+                {["Médecin","G","Sem","V/D","Sam","CS","BO","Unités","Objectif","Écart","6 ETP +rempl.","6 ETP +rempl. +non attr.","Réel 5,3 ETP"].map(h=>(
                   <th key={h} style={{padding:"8px 6px",textAlign:"center",fontWeight:700,color:T.textMuted,borderBottom:"1px solid "+T.border,whiteSpace:"nowrap",fontSize:10}}>{h}</th>
                 ))}
               </tr>
@@ -3284,7 +3283,7 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[],remplacants=[],besoins={}}
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:11,color:T.textPrimary}}>{m.unites.toFixed(1)}</td>
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:600,fontSize:11,color:T.textMuted}}>{objectif(m).toFixed(1)}</td>
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:800,fontSize:11,color:ecColor}}>{ec>0?"+":""}{ec.toFixed(1)}</td>
-                    {[r6,reel6R(m),reel6RN(m)].map((r,k)=>(
+                    {[reel6R(m),reel6RN(m)].map((r,k)=>(
                       <td key={"r6"+k} style={{padding:"8px 6px",textAlign:"center",fontWeight:800,fontSize:11,color:coulReel(r),whiteSpace:"nowrap"}}>{Math.round(r)} %<div style={{fontSize:8,fontWeight:500,color:T.textMuted}}>prévu {prevu} %</div></td>
                     ))}
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:800,fontSize:11,color:coulReel(r53),whiteSpace:"nowrap"}}>{Math.round(r53)} %<div style={{fontSize:8,fontWeight:500,color:T.textMuted}}>prévu {prevu} %</div></td>
@@ -3304,7 +3303,7 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[],remplacants=[],besoins={}}
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:11,color:T.textPrimary}}>{r.unites.toFixed(1)}</td>
                     <td style={{padding:"8px 6px",textAlign:"center",color:T.textMuted}}>—</td>
                     <td style={{padding:"8px 6px",textAlign:"center",color:T.textMuted}}>—</td>
-                    {[reel6(r),reel6R(r),reel6RN(r)].map((x,k)=>(
+                    {[reel6R(r),reel6RN(r)].map((x,k)=>(
                       <td key={"r6"+k} style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:11,color:T.textSecondary}}>{Math.round(x)} %</td>
                     ))}
                     <td style={{padding:"8px 6px",textAlign:"center",fontWeight:700,fontSize:11,color:T.textSecondary}}>{Math.round(reel53(r))} %</td>
