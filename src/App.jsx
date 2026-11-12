@@ -598,8 +598,8 @@ function unitesRemplacants(jours, gardes, bos, csbo, medecins) {
 }
 
 // Nombre max de CS/BO la semaine d'un pack ven+dim (et la semaine suivante)
-// Temps plein : 3, pour qu'ils puissent atteindre leur objectif d'unités. Autres : 2.
-function maxCSBOSemainePack(m){ return m.etp >= 1 ? 3 : 2; }
+// Temps plein (100 %) : pas de limite, pour qu'ils puissent atteindre leur objectif d'unités. Autres : 2.
+function maxCSBOSemainePack(m){ return m.etp >= 1 ? Infinity : 2; }
 
 // ── ALGORITHME CS / BO (V18) ──────────────────────────────────────────────────
 
