@@ -176,6 +176,10 @@ function numSem(key){
 // (BO, CS, BO/CS = 1 ; BO matin = 0,5 : voir SLOT_INFO)
 const GRANDS_FERIES=["12-24","12-25","12-31","01-01"];
 function poids(key,ferie){ const js=dkToDate(key).getDay(); if(GRANDS_FERIES.includes(key.slice(5)))return 3; if(ferie)return 2.5; if([5,6,0].includes(js))return 2; return 1.5; }
+// Préférence (onglet Indispos) : le médecin accepte, si nécessaire, le BO matin du vendredi
+// le lendemain de sa garde du jeudi. Stockée dans les contraintes (type ci-dessous).
+const PREF_BOM_LENDEMAIN="bom_lendemain_garde";
+function accepteBOMLendemain(id,contraintes){ return (contraintes||[]).some(c=>c.medecinId===id&&c.type===PREF_BOM_LENDEMAIN); }
 // Catégorie d'une garde, pour le détail du tableau d'Équité (même règle que poids)
 function typeGarde(key,ferie){ const js=dkToDate(key).getDay(); if(GRANDS_FERIES.includes(key.slice(5)))return "gFp"; if(ferie)return "gFer"; if(js===5)return "gVen"; if(js===6)return "gSam"; if(js===0)return "gDim"; return "gSem"; }
 const DETAIL0=()=>({gSem:0,gVen:0,gSam:0,gDim:0,gFer:0,gFp:0,bo:0,cs:0,bocs:0,bom:0});
@@ -551,16 +555,17 @@ function lendemain(key){ const d=dkToDate(key); return dk(new Date(d.getFullYear
 
 // Retire les CS/BO incompatibles avec les gardes : le jour de la garde, et le lendemain (repos de garde)
 // pour le médecin qui a réellement fait la garde. Renvoie {csbo, nb}.
-function retirerConflitsGarde(csbo, gardes, keys, lendemainAussi = true){
+function retirerConflitsGarde(csbo, gardes, keys, lendemainAussi = true, contraintes = []){
   const nc={...csbo}; let nb=0;
-  const retirer=(k,id)=>{ if(!id||!nc[k])return; const v={...nc[k]}; let modif=false;
-    SLOTS_CSBO.forEach(sl=>{ if(v[sl]===id){ delete v[sl]; modif=true; nb++; } });
+  const retirer=(k,id,lend)=>{ if(!id||!nc[k])return; const v={...nc[k]}; let modif=false;
+    const garderBOM=lend&&dkToDate(k).getDay()===5&&accepteBOMLendemain(id,contraintes);
+    SLOTS_CSBO.forEach(sl=>{ if(v[sl]===id&&!(garderBOM&&sl==="bom")){ delete v[sl]; modif=true; nb++; } });
     if(modif) nc[k]=v; };
   for(const key of keys){
     const g=gardes[key]; if(!g) continue;
     const ponctuel=String(g).startsWith("PONCTUEL:");
     retirer(key, ponctuel?g.split(":")[1]:g);       // même jour
-    if(!ponctuel && lendemainAussi) retirer(lendemain(key), g);   // repos de garde (génération automatique)
+    if(!ponctuel && lendemainAussi) retirer(lendemain(key), g, true);   // repos de garde (sauf BO matin du vendredi si accepté)
   }
   return {csbo:nc, nb};
 }
@@ -701,6 +706,61 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
     m.cibleBO = totalEtp > 0 ? (dejaBO + totalBO) * m.etp / totalEtp : 0;
   });
 
+  // ── Lissage (contraintes DOUCES : elles orientent les choix, elles ne laissent jamais un poste vide) ──
+  // - charge hebdomadaire proche de la moyenne du médecin (≈ 5 u/sem pour un 100 %, 3,5 pour un 70 %, 2,5 pour un 50 %)
+  // - pas plus d'environ 2 consultations par semaine
+  // - BO matin du vendredi le lendemain d'une garde du jeudi : seulement si accepté, et en dernier recours
+  const ferCache = {};
+  const estFerie = k => { const y = +k.slice(0, 4); if (!ferCache[y]) ferCache[y] = joursFeries(y); return ferCache[y].has(k); };
+  const lundiDe = key => { const d = dkToDate(key); const js = (d.getDay() + 6) % 7; return dk(new Date(d.getFullYear(), d.getMonth(), d.getDate() - js)); };
+  const joursSemaine = key => { const l = dkToDate(lundiDe(key)); return [0,1,2,3,4,5,6].map(i => dk(new Date(l.getFullYear(), l.getMonth(), l.getDate() + i))); };
+  const csboJour = (k, res) => (k >= debutKey && k <= finKey) ? (res[k] || {}) : (csbo[k] || {});
+  function chargeSemaine(m, key, res) {
+    let u = 0, cs = 0;
+    for (const k of joursSemaine(key)) {
+      const g = gardes[k]; const gid = g && String(g).startsWith('PONCTUEL:') ? g.split(':')[1] : g;
+      if (gid === m.id) u += poids(k, estFerie(k));
+      if (bos[k] === m.id) u += 1;
+      const sl = slotDuMedecin(csboJour(k, res), m.id);
+      if (sl) { u += SLOT_INFO[sl].u; cs += SLOT_INFO[sl].cs; }
+    }
+    return { u, cs };
+  }
+  const veilleDe = key => { const d = dkToDate(key); return dk(new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1)); };
+  const estBOMLendemain = (m, key, slot) => slot === 'bom' && gardes[veilleDe(key)] === m.id;
+  // Cible hebdomadaire = objectif ÷ nombre de semaines où le médecin est disponible (≥ 3 jours ouvrés sans indispo)
+  {
+    const joursHorizon = periodes ? [...horizon].filter(k => k <= finKey) : ja.filter(j => j.key >= debutKey && j.key <= finKey).map(j => j.key);
+    st.forEach(m => {
+      const dispo = {};
+      for (const k of joursHorizon) {
+        const js = dkToDate(k).getDay();
+        if (js >= 1 && js <= 5 && !estIndispoJourEntier(m.id, k, indispos)) { const l = lundiDe(k); dispo[l] = (dispo[l] || 0) + 1; }
+      }
+      const nbSem = Object.values(dispo).filter(n => n >= 3).length;
+      m.cibleSem = nbSem > 0 ? m.cible / nbSem : 0;
+    });
+  }
+  // Pénalité d'un choix (médecin m sur ce poste) : plus elle est forte, moins le choix est prioritaire
+  function penaliteLissage(m, key, slot, res) {
+    const { u, cs } = chargeSemaine(m, key, res), i = SLOT_INFO[slot];
+    const exces = Math.max(0, u + i.u - (m.cibleSem + 1));      // tolérance d'une unité au-dessus de la moyenne
+    const csExces = Math.max(0, cs + i.cs - 2);                  // au-delà de 2 consultations dans la semaine
+    return exces * 3000 + csExces * 6000 + (estBOMLendemain(m, key, slot) ? 20000 : 0);
+  }
+  // Pénalité globale d'un planning (pour choisir le meilleur des essais)
+  const semainesPeriode = [...new Set(jours.map(j => lundiDe(j.key)))];
+  function penaliteGlobale(stL, res) {
+    let p = 0;
+    for (const m of stL) for (const l of semainesPeriode) {
+      const { u, cs } = chargeSemaine(m, l, res);
+      const e = Math.max(0, u - (m.cibleSem + 1)); p += e * e * 150;
+      const c = Math.max(0, cs - 2); p += c * c * 400;
+    }
+    for (const j of jours) { const v = res[j.key] || {}; if (v.bom && gardes[veilleDe(j.key)] === v.bom) p += 800; }
+    return p;
+  }
+
   // Vérifie si un médecin peut faire un poste ce jour
   // Règle « max X <jour> par mois » (Réglages) : compte les jours travaillés, garde ou CS/BO
   function sousMaxParMois(m, key, res) {
@@ -736,7 +796,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
     // Pas de CS/BO le lendemain d'une garde
     const d = dkToDate(key);
     const veille = dk(new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1));
-    if (gardes[veille] === m.id) return false;
+    if (gardes[veille] === m.id && !(slot === 'bom' && d.getDay() === 5 && accepteBOMLendemain(m.id, contraintes))) return false;
     // Si pack ven+dim cette semaine → max 2 CS/BO sur la semaine
     const jourSem = d.getDay() === 0 ? 6 : d.getDay() - 1; // 0=lun
     const debutSem = new Date(d); debutSem.setDate(d.getDate() - jourSem);
@@ -817,7 +877,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
     for (const poste of sortByConstraint(shuffle(postesCS.slice()))) {
       const cands = stLocal.filter(m => peutFaire(m, poste.key, resLocal, poste.slot) && !dejaAffecteJour(m, poste.key, resLocal));
       if (cands.length === 0) { nonRemplis++; continue; }
-      cands.sort((a, b) => scoreCS(b) - scoreCS(a));
+      cands.sort((a, b) => (scoreCS(b) - penaliteLissage(b, poste.key, poste.slot, resLocal)) - (scoreCS(a) - penaliteLissage(a, poste.key, poste.slot, resLocal)));
       const c = cands[0];
       if (!resLocal[poste.key]) resLocal[poste.key] = {};
       resLocal[poste.key][poste.slot] = c.id;
@@ -831,8 +891,10 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
     for (const poste of ordreBO) {
       const cands = stLocal.filter(m => peutFaire(m, poste.key, resLocal, poste.slot) && !dejaAffecteJour(m, poste.key, resLocal));
       if (cands.length === 0) { nonRemplis++; continue; }
-      if (poste.slot === 'bom') cands.sort((a, b) => (a.bom - b.bom) || (scoreBO(b) - scoreBO(a)));
-      else cands.sort((a, b) => scoreBO(b) - scoreBO(a));
+      const scL = m => scoreBO(m) - penaliteLissage(m, poste.key, poste.slot, resLocal);
+      // BO matin : le lendemain de garde seulement en dernier recours, puis à parts égales, puis lissage
+      if (poste.slot === 'bom') cands.sort((a, b) => (estBOMLendemain(a, poste.key, 'bom') - estBOMLendemain(b, poste.key, 'bom')) || (a.bom - b.bom) || (scL(b) - scL(a)));
+      else cands.sort((a, b) => scL(b) - scL(a));
       const c = cands[0];
       if (!resLocal[poste.key]) resLocal[poste.key] = {};
       resLocal[poste.key][poste.slot] = c.id;
@@ -850,7 +912,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
         if (v[poste.slot] !== trop.id) continue;
         const i = SLOT_INFO[poste.slot];
         delete v[poste.slot]; trop.cs -= i.cs; trop.bo -= i.bo; trop.u -= i.u;
-        if (peutFaire(manque, poste.key, resLocal, poste.slot) && !dejaAffecteJour(manque, poste.key, resLocal)) {
+        if (peutFaire(manque, poste.key, resLocal, poste.slot) && !dejaAffecteJour(manque, poste.key, resLocal) && chargeSemaine(manque, poste.key, resLocal).cs + i.cs <= 2) {
           v[poste.slot] = manque.id; manque.cs += i.cs; manque.bo += i.bo; manque.u += i.u; fait = true; break;
         } else { v[poste.slot] = trop.id; trop.cs += i.cs; trop.bo += i.bo; trop.u += i.u; }
       }
@@ -869,7 +931,9 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
         for (const manque of parEcart.slice().reverse()) {
           if (fait) break;
           if (manque.cible - manque.u <= 0.25) break;
-          for (const poste of shuffle(tousPostesLoc.slice())) {
+          const postesTrop = shuffle(tousPostesLoc.filter(p => (resLocal[p.key]||{})[p.slot] === trop.id))
+            .map(p => ({ p, pen: penaliteLissage(manque, p.key, p.slot, resLocal) })).sort((x, y) => x.pen - y.pen).map(x => x.p);
+          for (const poste of postesTrop) {
             const v = resLocal[poste.key]||{};
             if (v[poste.slot] !== trop.id) continue;
             if (poste.slot === 'bom' && Math.abs((trop.bom-1)-(manque.bom+1)) > 1) continue; // garder l'équité BO matin
@@ -914,7 +978,7 @@ function genererCSBO(medecins, gardes, bos, indispos, contraintes, csbo, besoins
     const score = stLocal.reduce((s,m) => {
       const eu=m.u-m.cible, ecs=m.cs-m.cibleCS, ebo=m.bo-m.cibleBO, ebom=m.bom-moyBOM;
       return s + eu*eu*400 + ecs*ecs*30 + ebo*ebo*5 + ebom*ebom*3000;
-    }, 0) + nonRemplis * 1000000;
+    }, 0) + penaliteGlobale(stLocal, resLocal) + nonRemplis * 1000000;
 
     if (score < meilleurScore) {
       meilleurScore = score; meilleurResult = resLocal;
@@ -1594,7 +1658,7 @@ function VuePeriodes({periodes,setPeriodes,gardes,setGardes,bos,setBos=()=>{},cs
         Object.assign(n,res.gardes);setGardes(n);setStats(res.stats);
         // La garde est prioritaire : retirer les CS/BO du médecin de garde le jour même et le lendemain
         const keysP=[];{const dC=dkToDate(p.debut),fC=dkToDate(p.fin);while(dC<=fC){keysP.push(dk(dC));dC.setDate(dC.getDate()+1);}}
-        const rc=retirerConflitsGarde(csbo,n,keysP);const ncsbo=rc.csbo,nbConflits=rc.nb;
+        const rc=retirerConflitsGarde(csbo,n,keysP,true,contraintes);const ncsbo=rc.csbo,nbConflits=rc.nb;
         if(nbConflits>0)setCsbo(ncsbo);
         if(res.gardesManquantes&&res.gardesManquantes.length>0){
           setJoursManquants(prev=>({...prev,[p.id+"_gardes"]:res.gardesManquantes}));
@@ -3332,7 +3396,7 @@ function VueEquite({gardes,bos,csbo,annee,periodes=[],remplacants=[],besoins={}}
 
 // ── INDISPOS ───────────────────────────────────────────────────────────────────
 
-function VueIndispos({indispos,setIndispos,currentUser,annee}){
+function VueIndispos({indispos,setIndispos,currentUser,annee,contraintes=[],setContraintes=()=>{}}){
   const [mois,setMois]=useState(new Date().getMonth());
   const [selMed,setSelMed]=useState(currentUser.role==="medecin"?currentUser.id:"");
   const [typeSel,setTypeSel]=useState("jour");
@@ -3413,6 +3477,21 @@ function VueIndispos({indispos,setIndispos,currentUser,annee}){
           👆 Sélectionnez un médecin ci-dessus
         </div>
       )}
+
+      {/* Préférence : BO matin du vendredi le lendemain de la garde du jeudi */}
+      {selMed&&(()=>{
+        const coche=accepteBOMLendemain(selMed,contraintes);
+        const basculer=()=>setContraintes(prev=>coche?prev.filter(c=>!(c.medecinId===selMed&&c.type===PREF_BOM_LENDEMAIN)):[...prev,{id:Date.now(),medecinId:selMed,type:PREF_BOM_LENDEMAIN,valeur:"vendredi"}]);
+        return (
+          <label style={{display:"flex",alignItems:"flex-start",gap:10,background:"#fff",border:"1px solid "+T.border,borderRadius:10,padding:"10px 14px",marginBottom:12,cursor:"pointer"}}>
+            <input type="checkbox" checked={coche} onChange={basculer} style={{marginTop:2,width:16,height:16,flexShrink:0}}/>
+            <span style={{fontSize:12,color:T.textPrimary,lineHeight:1.4}}>
+              <strong>{medSelActif?.nom}</strong> accepte de faire le <strong>BO matin du vendredi</strong> le lendemain de sa garde du jeudi
+              <span style={{display:"block",fontSize:10,color:T.textMuted,marginTop:2}}>Seulement si nécessaire : l'application l'évite tant qu'elle a une autre solution.</span>
+            </span>
+          </label>
+        );
+      })()}
 
       {/* Type d'indisponibilité */}
       {selMed&&(
@@ -3532,7 +3611,7 @@ function VueContraintes({contraintes,setContraintes,currentUser}){
   const [max,setMax]=useState(2);
   const ajouter=()=>{if(!mid)return;setContraintes(prev=>[...prev,{id:Date.now(),medecinId:mid,type,valeur:val,max:Number(max)}]);};
   // Tout le monde voit toutes les contraintes, triées par prénom
-  const liste=[...contraintes].sort((a,b)=>{
+  const liste=[...contraintes].filter(c=>c.type!==PREF_BOM_LENDEMAIN).sort((a,b)=>{
     const mA=MEDECINS.find(m=>m.id===a.medecinId)?.nom||"";
     const mB=MEDECINS.find(m=>m.id===b.medecinId)?.nom||"";
     return mA.localeCompare(mB);
@@ -3881,7 +3960,7 @@ export default function App(){
         {tab==="besoins"&&<VueBesoins besoins={besoins} setBesoins={setBesoins} annee={annee} isAdmin={isAdmin}/>}
         {tab==="echanges"&&<VueEchanges echanges={echanges} setEchanges={setEchanges} gardes={gardes} setGardes={setGardes} csbo={csbo} setCsbo={setCsbo} bos={bos} setBos={setBos} currentUser={user} annee={annee} showToast={showToast}/>}
         {tab==="equite"&&<VueEquite gardes={gardes} bos={bos} csbo={csbo} annee={annee} periodes={periodes} remplacants={remplacants} besoins={besoins}/>}
-        {tab==="indispos"&&<VueIndispos indispos={indispos} setIndispos={setIndispos} currentUser={user} annee={annee}/>}
+        {tab==="indispos"&&<VueIndispos indispos={indispos} setIndispos={setIndispos} currentUser={user} annee={annee} contraintes={contraintes} setContraintes={setContraintes}/>}
         {tab==="remplacants"&&<VueRemplacants remplacants={remplacants} setRemplacants={setRemplacants} gardes={gardes} setGardes={setGardes} bos={bos} setBos={setBos} csbo={csbo} setCsbo={setCsbo} annee={annee} showToast={showToast} isAdmin={isAdmin}/>}
         {tab==="contraintes"&&<VueContraintes contraintes={contraintes} setContraintes={setContraintes} currentUser={user}/>}
       </div>
